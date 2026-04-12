@@ -1,7 +1,7 @@
 ---
 name: create-quay-repo
 description: Creates a Quay repository via a GitOps MR to app-interface. Handles fork setup, sparse YAML editing, MR creation, and optional Jira tracking. Automates Step 2 of the ODH component onboarding pipeline.
-allowed-tools: Bash
+allowed-tools: Bash, Read, Edit
 user-invocable: true
 ---
 
@@ -53,17 +53,6 @@ COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
 
 ---
 
-## Idempotency: --existing-mr-url fast-path
-
-If the skill is invoked with `--existing-mr-url <url>`, print:
-```
-MR already raised: <url>
-```
-and exit 0 immediately. The orchestrator passes this argument when the MR URL is already
-recorded in `pipeline_state.json`, meaning this step was completed in a prior run.
-
----
-
 ## Step 0: Parse Inputs
 
 Parse the arguments provided by the user:
@@ -86,23 +75,7 @@ Parse the arguments provided by the user:
 3. Extract `<jira-url>` from `--jira-url` if provided. Extract `<jira-id>` as the last
    path segment of the URL (e.g., `RHOAIENG-1234`).
 
-4. Resolve `APP_INTERFACE_URL` — execute this exact block; do NOT skip the `echo`:
-
-   ```bash
-   APP_INTERFACE_URL="${APP_INTERFACE_REPO_URL:-https://gitlab.cee.redhat.com/service/app-interface}"
-   echo "APP_INTERFACE_REPO_URL=${APP_INTERFACE_REPO_URL:-(not set, using default)}"
-   echo "APP_INTERFACE_URL resolved to: $APP_INTERFACE_URL"
-   ```
-
-   **Never override or re-derive `APP_INTERFACE_URL` in later steps.** If any step appears
-   to use a different URL, that is a bug — stop and correct it.
-
-> **IMPORTANT — `APP_INTERFACE_URL` is the single source of truth for all Git and GitLab
-> operations in this skill.**
-> Use `$APP_INTERFACE_URL` for every operation: fork setup (`--gitlab-repo-url`),
-> playpen clone (`--src-url`), and MR destination (`--dest-url`).
-> **Never substitute the upstream URL in place of `$APP_INTERFACE_URL`**, even if it
-> appears to point to a personal fork. The user configured it intentionally.
+4. Set `APP_INTERFACE_URL` to `$APP_INTERFACE_REPO_URL` if set, else `https://gitlab.cee.redhat.com/service/app-interface`.
 
 ---
 
@@ -111,14 +84,44 @@ Parse the arguments provided by the user:
 Check in order. Stop with a remediation message if any check fails.
 
 ```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
-  --env "GITLAB_USER GITLAB_TOKEN" \
-  --tools "uv skopeo"
+# 1. GITLAB_USER
+if [[ -z "${GITLAB_USER:-}" ]]; then
+  echo "ERROR: GITLAB_USER is not set."
+  echo "  export GITLAB_USER=yourusername"
+  exit 1
+fi
+
+# 2. GITLAB_TOKEN
+if [[ -z "${GITLAB_TOKEN:-}" ]]; then
+  echo "ERROR: GITLAB_TOKEN is not set."
+  echo "  export GITLAB_TOKEN=yourtoken"
+  exit 1
+fi
+
+# 3. uv
+if ! command -v uv &>/dev/null; then
+  echo "ERROR: uv is not installed."
+  echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+  exit 1
+fi
+
+# 4. skopeo
+if ! command -v skopeo &>/dev/null; then
+  echo "ERROR: skopeo is not installed."
+  echo "  macOS:       brew install skopeo"
+  echo "  RHEL/Fedora: sudo dnf install skopeo"
+  exit 1
+fi
 ```
 
 If `--jira-url` was provided, also check:
 ```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" --env "JIRA_USER_EMAIL JIRA_API_TOKEN"
+if [[ -z "${JIRA_USER_EMAIL:-}" ]] || [[ -z "${JIRA_API_TOKEN:-}" ]]; then
+  echo "ERROR: --jira-url requires JIRA_USER_EMAIL and JIRA_API_TOKEN to be set."
+  echo "  export JIRA_USER_EMAIL=you@example.com"
+  echo "  export JIRA_API_TOKEN=your-api-token"
+  exit 1
+fi
 ```
 
 ---
@@ -126,12 +129,12 @@ bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" --env "JIRA_USER_EMAIL JIRA_AP
 ## Step 2: Create Working Directory
 
 ```bash
-if [[ -n "${JIRA_URL:-}" ]]; then
-  eval "$(bash "$COMMON_SCRIPTS_DIR/init_workdir.sh" --jira-url "$JIRA_URL")"
+if [[ -n "<jira-id>" ]]; then
+  WORKDIR="$(pwd)/<jira-id>"
 else
   WORKDIR="$(pwd)/quay-<org>-<repo>"
-  mkdir -p "$WORKDIR"
 fi
+mkdir -p "$WORKDIR"
 echo "Working directory: $WORKDIR"
 ```
 
@@ -155,9 +158,42 @@ bash <COMMON_SCRIPTS_DIR>/check_quay_repo.sh quay.io/<org>/<repo>
   ```
   And **stop**.
 
-- **Exit 1** (does not exist): Continue to Step 5.
+- **Exit 1** (does not exist): Continue to Step 4.
 
 - **Exit 2** (tool error): Display the error output and stop.
+
+---
+
+## Step 4: Check for Existing Open MR in Jira Comments
+
+This step only runs if `$WORKDIR/odh_component_details.json` exists (produced by the
+`validate-component-onboarding-jira` skill).
+
+Use the `Read` tool to read `$WORKDIR/odh_component_details.json`.
+
+Search the array at `fields.comment.comments[].body` for GitLab MR URLs matching the
+regular expression:
+```
+https://gitlab\.cee\.redhat\.com/[^/\s]+/[^/\s]+/-/merge_requests/\d+
+```
+
+For each URL found, run:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/monitor_gitlab_mr.py --mr-url <found-url> --check-only
+```
+
+Parse the stdout:
+- If `state=opened` **and** the `title=` line contains `<repo>` (the quay repo name):
+  - This is an existing open MR for the same quay repo.
+  - If `--jira-url` provided:
+    ```bash
+    uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+      --comment "Found existing open GitLab MR for quay.io/<org>/<repo>: <found-url>. Monitoring it."
+    ```
+  - Print: `Found existing open MR: <found-url>. Skipping MR creation and jumping to monitor step.`
+  - **Jump directly to Step 10** (Monitor MR) using `MR_URL=<found-url>`.
+
+If no matching open MR is found, continue to Step 5.
 
 ---
 
@@ -178,12 +214,12 @@ On success, `FORK_URL` holds the HTTPS URL of the fork (e.g.,
 
 ---
 
-## Step 6: Determine YAML File Path and Branch Name
+## Step 6: Determine Sparse File Path and Branch Name
 
 Map `<org>` to the YAML file path inside app-interface:
 
-| `<org>` | YAML file path |
-|---------|----------------|
+| `<org>` | Sparse file path |
+|---------|-----------------|
 | `opendatahub` | `data/services/rhoai/quay/opendatahub.yml` |
 | `rhoai`       | `data/services/rhoai/quay/rhoai.yml`       |
 | `modh`        | `data/services/rhoai/quay/modh.yml`        |
@@ -194,7 +230,7 @@ For any other `<org>`, pause and ask:
 > This is typically under `data/services/rhoai/quay/<org>.yml`.
 > What is the correct path?
 
-Set `YAML_FILE=<path>`.
+Set `SPARSE_FILE=<path>`.
 
 Determine `DEST_BRANCH`:
 - If `<jira-id>` is available: `DEST_BRANCH=<jira-id>` (e.g. `RHOAIENG-1234`)
@@ -202,36 +238,32 @@ Determine `DEST_BRANCH`:
 
 ---
 
-## Step 7: Set Up Playpen (Full Clone)
+## Step 7: Set Up Playpen (Sparse Clone)
 
-Run from inside `$WORKDIR`. The clone is wrapped with a **45-minute timeout** (`timeout 2700`)
-because `app-interface` is a large repository that can take a long time to fetch.
+Run from inside `$WORKDIR`:
 
 ```bash
 cd "$WORKDIR"
 
 if [[ -n "$DEST_BRANCH" ]]; then
-  PLAYPEN_OUTPUT=$(timeout 2700 bash <COMMON_SCRIPTS_DIR>/setup_gitlab_playpen.sh \
+  PLAYPEN_OUTPUT=$(bash <COMMON_SCRIPTS_DIR>/setup_gitlab_playpen.sh \
     --src-url "$APP_INTERFACE_URL" \
     --dest-url "$FORK_URL" \
     --src-branch master \
-    --dest-branch "$DEST_BRANCH")
+    --dest-branch "$DEST_BRANCH" \
+    --sparse-files "$SPARSE_FILE")
 else
-  PLAYPEN_OUTPUT=$(timeout 2700 bash <COMMON_SCRIPTS_DIR>/setup_gitlab_playpen.sh \
+  PLAYPEN_OUTPUT=$(bash <COMMON_SCRIPTS_DIR>/setup_gitlab_playpen.sh \
     --src-url "$APP_INTERFACE_URL" \
     --dest-url "$FORK_URL" \
-    --src-branch master)
+    --src-branch master \
+    --sparse-files "$SPARSE_FILE")
 fi
 ```
 
 Parse `PLAYPEN_OUTPUT`:
 - Line 1 → `CLONE_DIR` (absolute path to the `app-interface-playpen` directory)
 - Line 2 → `DEST_BRANCH` (the branch that was created and pushed)
-
-On exit 124 (timeout): stop with:
-```
-ERROR in Step 7 (Playpen setup): Clone timed out after 45 minutes. Check VPN connectivity and retry. Aborting.
-```
 
 On exit 1: display stderr and stop with:
 ```
@@ -242,57 +274,50 @@ ERROR in Step 7 (Playpen setup): Clone or push failed. See details above. Aborti
 
 ## Step 8: Modify YAML File
 
-**Resolve description:** If `product_context == RHOAI`, use `short_description` from the
-collected inputs; otherwise use `"<org> <repo> container image"`.
+Use the `Read` tool to read `$CLONE_DIR/$SPARSE_FILE`.
 
-**Idempotency check:** Check whether `<repo>` already exists in the YAML:
+**Idempotency check:** Search the `items:` array for any entry where `name: <repo>` is already
+present. If found:
+- Print: `Entry for '<repo>' already exists in the YAML — skipping append.`
+- Continue to Step 9.
 
-```bash
-if grep -q "^  name: <repo>$" "$CLONE_DIR/$YAML_FILE" 2>/dev/null || \
-   grep -q "^- name: <repo>$" "$CLONE_DIR/$YAML_FILE" 2>/dev/null; then
-  echo "Entry for '<repo>' already exists in the YAML — skipping append."
-  # Continue to Step 9
-else
-  if [[ "$visibility" == "public" ]]; then
-    VIS_FLAG="--public"
-  else
-    VIS_FLAG="--no-public"
-  fi
-  uv run --script "$COMMON_SCRIPTS_DIR/edit_yaml.py" append-items-array \
-    "$CLONE_DIR/$YAML_FILE" \
-    --name "<repo>" \
-    --description "'<short_description if product_context==RHOAI, else '<org> <repo> container image'>'" \
-    $VIS_FLAG
-fi
+If the entry does NOT exist, compose the YAML block to append:
+```yaml
+- name: <repo>
+  description: "<org> <repo> container image"
+  public: <true_or_false>
 ```
+Where `public: true` if `visibility=public`, `public: false` if `visibility=private`.
 
-On exit 1 from `edit_yaml.py`: display stderr and stop with:
-```
-ERROR in Step 8 (Modify YAML): Could not append entry to $YAML_FILE. See details above. Aborting.
-```
+Use the `Edit` tool to append this block to the `items:` array in `$CLONE_DIR/$SPARSE_FILE`.
+Append after the last existing item in the array, maintaining consistent indentation (2 spaces).
+
+After editing, use the `Read` tool to re-read the file and verify:
+- The new `name: <repo>` entry is present
+- The YAML structure looks syntactically correct (items array properly indented)
+
+If the file looks malformed, fix it with another `Edit` call before proceeding.
 
 ---
 
 ## Step 9: Commit and Raise MR (up to 3 attempts)
 
-Commit and push the change:
-
+First, commit the change:
 ```bash
-DEST_REMOTE="dest"
-[[ "$FORK_URL" == "$APP_INTERFACE_URL" ]] && DEST_REMOTE="origin"
-
-bash "$COMMON_SCRIPTS_DIR/git_commit_push.sh" \
-  --clone-dir "$CLONE_DIR" \
-  --files     "$YAML_FILE" \
-  --message   "Add <repo> to quay <org> config" \
-  --branch    "$DEST_BRANCH" \
-  --remote    "$DEST_REMOTE"
+cd "$CLONE_DIR"
+git add "$SPARSE_FILE"
+git commit -m "Add <repo> to quay <org> config"
 ```
 
-On exit 1: display stderr and stop with:
+If `FORK_URL != APP_INTERFACE_URL`, the remote is named `dest`; otherwise it is `origin`.
+Determine the remote name (`DEST_REMOTE`) accordingly.
+
+Push the commit:
+```bash
+git push "$DEST_REMOTE" "$DEST_BRANCH"
 ```
-ERROR in Step 9 (Commit/Push): Could not commit or push changes. See details above. Aborting.
-```
+
+If the push fails (branch already has commits on remote), try `git push --force-with-lease "$DEST_REMOTE" "$DEST_BRANCH"` once.
 
 Now raise the MR. Attempt up to **3 times**:
 
@@ -333,12 +358,75 @@ MR URL: $MR_URL
 The Quay repo will be created automatically once this MR is merged."
 ```
 
-Print the MR URL and stop:
-```
-MR raised: $MR_URL
+---
+
+## Step 10: Monitor MR
+
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/monitor_gitlab_mr.py \
+  --mr-url "$MR_URL" \
+  --timeout 60
 ```
 
-The skill is complete. The orchestrator will monitor the MR separately.
+The script polls every 60 seconds and writes progress to stderr.
+
+Read the **stdout** result:
+
+- **`merged`** (exit 0): Quay repo is being created. If `--jira-url` provided:
+  ```bash
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+    --add-label "quay-repo-created" \
+    --remove-label "quay-mr-raised" \
+    --comment "MR merged: $MR_URL
+
+quay.io/<org>/<repo> has been created (or will be created shortly by app-interface's GitOps reconciliation).
+
+Step 2 (Create Quay Repo) is complete."
+  ```
+  Then print:
+  ```
+  ✓ quay.io/<org>/<repo> created successfully.
+    MR merged: <MR_URL>
+  ```
+
+- **`closed`** (exit 1): MR was closed without merging. If `--jira-url` provided:
+  ```bash
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+    --comment "GitLab MR was closed without merging: $MR_URL
+
+Please review the MR and re-run /create-quay-repo if needed."
+  ```
+  Then stop with:
+  ```
+  ERROR in Step 10 (Monitor MR): MR was closed without merging. Check the MR: <MR_URL>. Aborting.
+  ```
+
+- **`pipeline_failed`** or **`pipeline_canceled`** (exit 1): Pipeline failed. The monitor
+  script has already printed the failed job names and URLs to stderr. If `--jira-url` provided:
+  ```bash
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+    --comment "Pipeline failed on GitLab MR: $MR_URL
+
+Check the pipeline failures reported above and fix them, then re-run /create-quay-repo."
+  ```
+  Then stop with:
+  ```
+  ERROR in Step 10 (Monitor MR): Pipeline failed. Fix the pipeline issues and retry. MR: <MR_URL>. Aborting.
+  ```
+
+- **`timeout`** (exit 1): MR is still open after 60 minutes. If `--jira-url` provided:
+  ```bash
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+    --comment "Monitoring timed out after 60 minutes. MR is still open: $MR_URL
+
+Please check the MR status manually and re-run /create-quay-repo if needed."
+  ```
+  Then print:
+  ```
+  WARNING: MR monitoring timed out after 60 minutes.
+  The MR is still open: <MR_URL>
+  Check it manually and re-run this skill when the MR is merged (it will short-circuit at Step 3).
+  ```
 
 ---
 
@@ -350,9 +438,10 @@ The skill is complete. The orchestrator will monitor the MR separately.
 | `GITLAB_TOKEN` not set | Step 1 | `export GITLAB_TOKEN=yourtoken` |
 | `uv` not installed | Step 1 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | `skopeo` not installed | Step 1 | `brew install skopeo` / `sudo dnf install skopeo` |
-| VPN not active | Steps 5, 7, 9 | Activate VPN and re-run |
+| VPN not active | Steps 5, 7, 9, 10 | Activate VPN and re-run |
 | Fork creation fails | Step 5 | Check GITLAB_TOKEN permissions (needs `api` scope) |
 | Clone fails | Step 7 | Check VPN and GITLAB_TOKEN `write_repository` scope |
-| Clone timed out (45 min) | Step 7 | Check VPN; retry once connectivity is stable |
 | Push fails | Step 9 | Check GITLAB_TOKEN `write_repository` scope |
 | MR creation fails 3x | Step 9 | Check VPN; inspect stderr; manual fallback |
+| MR closed without merge | Step 10 | Review the MR; re-run after fixing |
+| Pipeline failed | Step 10 | Fix pipeline issues; re-run |
