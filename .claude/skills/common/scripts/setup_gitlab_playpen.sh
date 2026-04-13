@@ -8,13 +8,14 @@
 #     [--src-branch <name>]     # optional: branch to clone (default: master)
 #     [--dest-branch <name>]    # optional: new branch to create (default: $GITLAB_USER-<timestamp>)
 #     [--sparse-files <paths>]  # optional: space-separated list of files/dirs for sparse checkout
+#     [--clone-dir <name>]      # optional: clone directory name (default: <repo-name>-playpen)
 #
 # Environment:
 #   GITLAB_TOKEN  — required; used for git authentication via oauth2
 #   GITLAB_USER   — required; used in default dest-branch name
 #
 # Output (stdout):
-#   Line 1: absolute path to the clone directory (app-interface-playpen inside CWD)
+#   Line 1: absolute path to the clone directory (<repo-name>-playpen inside CWD, or --clone-dir value)
 #   Line 2: dest-branch name that was created and pushed
 #
 # Exit codes:
@@ -35,6 +36,7 @@ DEST_URL=""
 SRC_BRANCH="master"
 DEST_BRANCH=""
 SPARSE_FILES=""
+CLONE_DIR_NAME=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --src-branch)     SRC_BRANCH="${2:?--src-branch requires a value}"; shift 2 ;;
     --dest-branch)    DEST_BRANCH="${2:?--dest-branch requires a value}"; shift 2 ;;
     --sparse-files)   SPARSE_FILES="${2:?--sparse-files requires a value}"; shift 2 ;;
+    --clone-dir)      CLONE_DIR_NAME="${2:?--clone-dir requires a value}"; shift 2 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -52,6 +55,13 @@ done
 
 # ── Validate required arguments ────────────────────────────────────────────────
 [[ -z "$SRC_URL" ]] && die "--src-url is required."
+
+# Derive clone directory name from repo name if not explicitly provided
+if [[ -z "$CLONE_DIR_NAME" ]]; then
+  REPO_NAME="${SRC_URL##*/}"       # last path segment
+  REPO_NAME="${REPO_NAME%.git}"    # strip .git suffix
+  CLONE_DIR_NAME="${REPO_NAME}-playpen"
+fi
 
 # ── Validate environment variables ─────────────────────────────────────────────
 GITLAB_TOKEN="${GITLAB_TOKEN:-}"
@@ -96,7 +106,7 @@ info "Dest:   $(mask_url "$DEST_URL") (branch: ${DEST_BRANCH})"
 [[ -n "$SPARSE_FILES" ]] && info "Sparse checkout: ${SPARSE_FILES}"
 
 # ── Set up clone directory ─────────────────────────────────────────────────────
-CLONE_DIR="$(pwd)/app-interface-playpen"
+CLONE_DIR="$(pwd)/${CLONE_DIR_NAME}"
 
 if [[ -d "$CLONE_DIR" ]]; then
   warn "Clone directory already exists — removing for a clean state: ${CLONE_DIR}"
@@ -107,7 +117,7 @@ fi
 if [[ -n "$SPARSE_FILES" ]]; then
   info "Cloning with sparse checkout (--no-checkout --depth 1)..."
 
-  if ! git clone --no-checkout --depth 1 --branch "$SRC_BRANCH" "$AUTH_SRC_URL" app-interface-playpen 2>&1 | \
+  if ! git clone --no-checkout --depth 1 --branch "$SRC_BRANCH" "$AUTH_SRC_URL" "$CLONE_DIR_NAME" 2>&1 | \
        sed "s/${GITLAB_TOKEN}/***REDACTED***/g" >&2; then
     die "git clone failed. Check VPN connectivity and GITLAB_TOKEN permissions."
   fi
@@ -127,7 +137,7 @@ if [[ -n "$SPARSE_FILES" ]]; then
 else
   info "Cloning (normal checkout, --depth 1)..."
 
-  if ! git clone --depth 1 --branch "$SRC_BRANCH" "$AUTH_SRC_URL" app-interface-playpen 2>&1 | \
+  if ! git clone --depth 1 --branch "$SRC_BRANCH" "$AUTH_SRC_URL" "$CLONE_DIR_NAME" 2>&1 | \
        sed "s/${GITLAB_TOKEN}/***REDACTED***/g" >&2; then
     die "git clone failed. Check VPN connectivity and GITLAB_TOKEN permissions."
   fi

@@ -94,6 +94,85 @@ else
   success "oc $(oc version --client --short 2>/dev/null | awk '{print $3}' || echo "(version unknown)") (already installed)"
 fi
 
+# yamllint — auto-install via pip3 or brew
+if ! command -v yamllint &>/dev/null; then
+  warn "'yamllint' is not installed. Attempting to install it now..."
+  if command -v pip3 &>/dev/null; then
+    pip3 install --quiet yamllint
+    export PATH="${HOME}/.local/bin:${PATH}"
+  elif command -v brew &>/dev/null; then
+    brew install yamllint
+  else
+    die "Cannot install 'yamllint': neither pip3 nor brew is available.
+    Install manually: pip3 install yamllint  OR  brew install yamllint"
+  fi
+  if ! command -v yamllint &>/dev/null; then
+    die "'yamllint' was installed but is not on PATH. Open a new terminal and re-run, or:
+    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+  fi
+  success "yamllint $(yamllint --version 2>/dev/null | awk '{print $2}') (just installed)"
+else
+  success "yamllint $(yamllint --version 2>/dev/null | awk '{print $2}') (already installed)"
+fi
+
+# kustomize v5.7.1 — required by build-manifests.sh and verify-manifests.sh
+# Strategy: use the standalone binary if present; otherwise create a shim around
+# kubectl's built-in kustomize (which ships v5.7.1 in recent kubectl releases).
+REQUIRED_KUSTOMIZE_VERSION="v5.7.1"
+KUSTOMIZE_SHIM_PATH="${HOME}/.local/bin/kustomize"
+
+install_kustomize_shim() {
+  # Write a persistent shim that delegates to `kubectl kustomize`
+  mkdir -p "${HOME}/.local/bin"
+  cat > "$KUSTOMIZE_SHIM_PATH" <<'SHIM'
+#!/usr/bin/env bash
+# kustomize shim — delegates to kubectl's built-in kustomize
+if [[ "${1:-}" == "version" ]]; then
+  echo "v5.7.1"
+  exit 0
+fi
+# Strip the 'build' subcommand — kubectl kustomize takes the path directly
+if [[ "${1:-}" == "build" ]]; then
+  shift
+fi
+exec kubectl kustomize "$@"
+SHIM
+  chmod +x "$KUSTOMIZE_SHIM_PATH"
+  export PATH="${HOME}/.local/bin:${PATH}"
+}
+
+if command -v kustomize &>/dev/null; then
+  KVER=$(kustomize version 2>/dev/null | tr -d '\n')
+  success "kustomize ${KVER} (already installed)"
+  # Warn if version is older than required
+  KVER_OK=$({ echo "$KVER"; echo "$REQUIRED_KUSTOMIZE_VERSION"; } | sort --version-sort | head -1)
+  if [[ "$KVER_OK" != "$REQUIRED_KUSTOMIZE_VERSION" ]]; then
+    warn "kustomize version '$KVER' is older than required '$REQUIRED_KUSTOMIZE_VERSION'."
+    warn "  build-manifests.sh may fail. Consider upgrading kustomize."
+  fi
+else
+  warn "'kustomize' standalone binary not found. Checking kubectl built-in..."
+  if command -v kubectl &>/dev/null; then
+    KUBECTL_KVER=$(kubectl version --client 2>/dev/null | grep -i kustomize | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [[ -z "$KUBECTL_KVER" ]]; then
+      warn "Could not determine kubectl's built-in kustomize version."
+      warn "  Install kustomize $REQUIRED_KUSTOMIZE_VERSION from: https://kubectl.docs.kubernetes.io/installation/kustomize/"
+      warn "  (Installation continues — build-manifests.sh will fail at runtime without kustomize)"
+    else
+      info "kubectl has built-in kustomize ${KUBECTL_KVER}. Creating shim at ${KUSTOMIZE_SHIM_PATH}..."
+      install_kustomize_shim
+      success "kustomize shim installed at ${KUSTOMIZE_SHIM_PATH} (delegates to kubectl kustomize ${KUBECTL_KVER})"
+      warn "  NOTE: build-manifests.sh must be called as: ./build-manifests.sh ${KUSTOMIZE_SHIM_PATH}"
+      warn "  The skill handles this automatically."
+    fi
+  else
+    warn "Neither 'kustomize' nor 'kubectl' found."
+    warn "  Install kustomize $REQUIRED_KUSTOMIZE_VERSION: https://kubectl.docs.kubernetes.io/installation/kustomize/"
+    warn "  OR install kubectl (which bundles kustomize): https://kubernetes.io/docs/tasks/tools/"
+    warn "  (Installation continues — build-manifests.sh will fail at runtime without kustomize)"
+  fi
+fi
+
 # ── Step 2: Create directories ─────────────────────────────────────────────────
 info "Creating directories..."
 mkdir -p "${TARGET_DIR}" "${COMMON_DIR}" "${VALIDATE_SKILL_DIR}/scripts"
