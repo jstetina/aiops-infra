@@ -43,12 +43,15 @@ fi
 
 COMMON_DIR="${TARGET_DIR}/../common/scripts"
 COMMON_SRC="${SCRIPT_DIR}/../common/scripts"
+VALIDATE_SKILL_DIR="${TARGET_DIR}/../validate-component-onboarding-jira"
+VALIDATE_SKILL_SRC="${SCRIPT_DIR}/../validate-component-onboarding-jira"
 
 echo ""
 echo -e "${BOLD}Installing ${SKILL_NAME}${RESET}"
 echo "  Source        : ${SCRIPT_DIR}"
 echo "  Target        : ${TARGET_DIR}"
 echo "  Common scripts: ${COMMON_DIR}"
+echo "  Validate skill: ${VALIDATE_SKILL_DIR}"
 echo ""
 
 # ── Step 1: Check prerequisites ────────────────────────────────────────────────
@@ -91,90 +94,12 @@ else
   success "oc $(oc version --client --short 2>/dev/null | awk '{print $3}' || echo "(version unknown)") (already installed)"
 fi
 
-# yamllint — auto-install via pip3 or brew
-if ! command -v yamllint &>/dev/null; then
-  warn "'yamllint' is not installed. Attempting to install it now..."
-  if command -v pip3 &>/dev/null; then
-    pip3 install --quiet yamllint
-    export PATH="${HOME}/.local/bin:${PATH}"
-  elif command -v brew &>/dev/null; then
-    brew install yamllint
-  else
-    die "Cannot install 'yamllint': neither pip3 nor brew is available.
-    Install manually: pip3 install yamllint  OR  brew install yamllint"
-  fi
-  if ! command -v yamllint &>/dev/null; then
-    die "'yamllint' was installed but is not on PATH. Open a new terminal and re-run, or:
-    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
-  fi
-  success "yamllint $(yamllint --version 2>/dev/null | awk '{print $2}') (just installed)"
-else
-  success "yamllint $(yamllint --version 2>/dev/null | awk '{print $2}') (already installed)"
-fi
-
-# kustomize v5.7.1 — required by build-manifests.sh and verify-manifests.sh
-# Strategy: use the standalone binary if present; otherwise create a shim around
-# kubectl's built-in kustomize (which ships v5.7.1 in recent kubectl releases).
-REQUIRED_KUSTOMIZE_VERSION="v5.7.1"
-KUSTOMIZE_SHIM_PATH="${HOME}/.local/bin/kustomize"
-
-install_kustomize_shim() {
-  # Write a persistent shim that delegates to `kubectl kustomize`
-  mkdir -p "${HOME}/.local/bin"
-  cat > "$KUSTOMIZE_SHIM_PATH" <<'SHIM'
-#!/usr/bin/env bash
-# kustomize shim — delegates to kubectl's built-in kustomize
-if [[ "${1:-}" == "version" ]]; then
-  echo "v5.7.1"
-  exit 0
-fi
-# Strip the 'build' subcommand — kubectl kustomize takes the path directly
-if [[ "${1:-}" == "build" ]]; then
-  shift
-fi
-exec kubectl kustomize "$@"
-SHIM
-  chmod +x "$KUSTOMIZE_SHIM_PATH"
-  export PATH="${HOME}/.local/bin:${PATH}"
-}
-
-if command -v kustomize &>/dev/null; then
-  KVER=$(kustomize version 2>/dev/null | tr -d '\n')
-  success "kustomize ${KVER} (already installed)"
-  # Warn if version is older than required
-  KVER_OK=$({ echo "$KVER"; echo "$REQUIRED_KUSTOMIZE_VERSION"; } | sort --version-sort | head -1)
-  if [[ "$KVER_OK" != "$REQUIRED_KUSTOMIZE_VERSION" ]]; then
-    warn "kustomize version '$KVER' is older than required '$REQUIRED_KUSTOMIZE_VERSION'."
-    warn "  build-manifests.sh may fail. Consider upgrading kustomize."
-  fi
-else
-  warn "'kustomize' standalone binary not found. Checking kubectl built-in..."
-  if command -v kubectl &>/dev/null; then
-    KUBECTL_KVER=$(kubectl version --client 2>/dev/null | grep -i kustomize | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    if [[ -z "$KUBECTL_KVER" ]]; then
-      warn "Could not determine kubectl's built-in kustomize version."
-      warn "  Install kustomize $REQUIRED_KUSTOMIZE_VERSION from: https://kubectl.docs.kubernetes.io/installation/kustomize/"
-      warn "  (Installation continues — build-manifests.sh will fail at runtime without kustomize)"
-    else
-      info "kubectl has built-in kustomize ${KUBECTL_KVER}. Creating shim at ${KUSTOMIZE_SHIM_PATH}..."
-      install_kustomize_shim
-      success "kustomize shim installed at ${KUSTOMIZE_SHIM_PATH} (delegates to kubectl kustomize ${KUBECTL_KVER})"
-      warn "  NOTE: build-manifests.sh must be called as: ./build-manifests.sh ${KUSTOMIZE_SHIM_PATH}"
-      warn "  The skill handles this automatically."
-    fi
-  else
-    warn "Neither 'kustomize' nor 'kubectl' found."
-    warn "  Install kustomize $REQUIRED_KUSTOMIZE_VERSION: https://kubectl.docs.kubernetes.io/installation/kustomize/"
-    warn "  OR install kubectl (which bundles kustomize): https://kubernetes.io/docs/tasks/tools/"
-    warn "  (Installation continues — build-manifests.sh will fail at runtime without kustomize)"
-  fi
-fi
-
 # ── Step 2: Create directories ─────────────────────────────────────────────────
 info "Creating directories..."
-mkdir -p "${TARGET_DIR}" "${COMMON_DIR}"
+mkdir -p "${TARGET_DIR}" "${COMMON_DIR}" "${VALIDATE_SKILL_DIR}/scripts"
 success "Directory ready: ${TARGET_DIR}"
 success "Directory ready: ${COMMON_DIR}"
+success "Directory ready: ${VALIDATE_SKILL_DIR}/scripts"
 
 # ── Step 3: Copy skill files ───────────────────────────────────────────────────
 info "Copying skill files..."
@@ -192,8 +117,6 @@ COMMON_SCRIPTS=(
   "update_jira_issue.py"
   "login_to_konflux_cluster.sh"
   "check_konflux_component.sh"
-  "fetch_jira_details.py"
-  "download_jira_attachment.py"
 )
 
 for script in "${COMMON_SCRIPTS[@]}"; do
@@ -207,12 +130,31 @@ for script in "${COMMON_SCRIPTS[@]}"; do
   fi
 done
 
-# ── Step 5: Set permissions ────────────────────────────────────────────────────
+# ── Step 5: Copy validate-component-onboarding-jira scripts ───────────────────
+info "Copying validate-component-onboarding-jira scripts (for Jira fetch/download)..."
+
+VALIDATE_SCRIPTS=(
+  "fetch_jira_details.py"
+  "download_jira_attachment.py"
+)
+
+for script in "${VALIDATE_SCRIPTS[@]}"; do
+  src="${VALIDATE_SKILL_SRC}/scripts/${script}"
+  if [[ -f "$src" ]]; then
+    cp "$src" "${VALIDATE_SKILL_DIR}/scripts/${script}"
+    success "Copied: validate-component-onboarding-jira/scripts/${script}"
+  else
+    die "Source script not found: ${src}
+  Ensure the validate-component-onboarding-jira skill is present alongside this skill."
+  fi
+done
+
+# ── Step 6: Set permissions ────────────────────────────────────────────────────
 info "Setting permissions..."
 chmod +x "${COMMON_DIR}/setup_gitlab_playpen.sh"
 chmod +x "${COMMON_DIR}/login_to_konflux_cluster.sh"
 chmod +x "${COMMON_DIR}/check_konflux_component.sh"
-for pyfile in "${COMMON_DIR}"/*.py; do
+for pyfile in "${COMMON_DIR}"/*.py "${VALIDATE_SKILL_DIR}/scripts"/*.py; do
   [[ -f "$pyfile" ]] && chmod +x "$pyfile"
 done
 success "Permissions set."
@@ -243,8 +185,8 @@ pre_warm "monitor_gitlab_mr.py"   "${COMMON_DIR}/monitor_gitlab_mr.py"
 
 # jira scripts
 pre_warm "update_jira_issue.py"       "${COMMON_DIR}/update_jira_issue.py"
-pre_warm "fetch_jira_details.py"      "${COMMON_DIR}/fetch_jira_details.py"
-pre_warm "download_jira_attachment.py" "${COMMON_DIR}/download_jira_attachment.py"
+pre_warm "fetch_jira_details.py"      "${VALIDATE_SKILL_DIR}/scripts/fetch_jira_details.py"
+pre_warm "download_jira_attachment.py" "${VALIDATE_SKILL_DIR}/scripts/download_jira_attachment.py"
 
 if $ALL_DEPS_OK; then
   success "All Python dependencies installed and cached."
@@ -264,8 +206,8 @@ REQUIRED_FILES=(
   "${COMMON_DIR}/update_jira_issue.py"
   "${COMMON_DIR}/login_to_konflux_cluster.sh"
   "${COMMON_DIR}/check_konflux_component.sh"
-  "${COMMON_DIR}/fetch_jira_details.py"
-  "${COMMON_DIR}/download_jira_attachment.py"
+  "${VALIDATE_SKILL_DIR}/scripts/fetch_jira_details.py"
+  "${VALIDATE_SKILL_DIR}/scripts/download_jira_attachment.py"
 )
 
 ALL_OK=true
@@ -324,15 +266,11 @@ else
   success "JIRA_SERVER=${JIRA_SERVER}"
 fi
 
-if [[ -z "${EXT_OC_TOKEN:-}" ]]; then
-  warn "EXT_OC_TOKEN is not set — required only if no matching kubeconfig context for the external cluster (stone-prd-rh01)."
+if [[ -z "${OC_TOKEN:-}" ]]; then
+  warn "OC_TOKEN is not set — required only if no matching kubeconfig context is found."
+  warn "  Get a token from the OpenShift web console if needed."
 else
-  success "EXT_OC_TOKEN=<set>"
-fi
-if [[ -z "${INT_OC_TOKEN:-}" ]]; then
-  warn "INT_OC_TOKEN is not set — required only if no matching kubeconfig context for the internal cluster (stone-prod-p02)."
-else
-  success "INT_OC_TOKEN=<set>"
+  success "OC_TOKEN=<set>"
 fi
 
 if ! $CREDS_OK; then
@@ -347,8 +285,7 @@ if ! $CREDS_OK; then
   echo "    # Optional overrides:"
   echo "    # export KONFLUX_RELEASE_DATA_REPO_URL='https://gitlab.cee.redhat.com/releng/konflux-release-data.git'"
   echo "    # export JIRA_SERVER='https://redhat.atlassian.net'"
-  echo "    # export EXT_OC_TOKEN='<token-from-external-openshift-console>'  # stone-prd-rh01 (ODH builds)
-    # export INT_OC_TOKEN='<token-from-internal-openshift-console>'  # stone-prod-p02 (RHOAI builds)"
+  echo "    # export OC_TOKEN='<token-from-openshift-console>'"
   echo ""
   echo "  Create GitLab token: GitLab → User Settings → Access Tokens"
   echo "  Create Jira token:   https://id.atlassian.com/manage-profile/security/api-tokens"
@@ -365,5 +302,5 @@ echo ""
 echo "  NOTE: This skill requires:"
 echo "    - VPN access to gitlab.cee.redhat.com (for KRD repo)"
 echo "    - VPN access to the Konflux OpenShift cluster (for component checks)"
-echo "    - 'component_onboarding_details.yaml' attached to the Jira issue"
+echo "    - 'odh_component_details.yaml' attached to the Jira issue"
 echo ""
