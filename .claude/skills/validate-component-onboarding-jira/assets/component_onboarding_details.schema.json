@@ -26,9 +26,9 @@
         },
         "component_name": {
           "type": "string",
-          "description": "Unique component name starting with 'odh-', using only lowercase letters, numbers, and hyphens",
-          "pattern": "^odh-[a-z0-9]+(-[a-z0-9]+)*$",
-          "minLength": 5
+          "description": "Unique kebab-case name for the ODH/RHOAI component",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 1
         },
         "repo_url": {
           "type": "string",
@@ -67,11 +67,6 @@
           "minItems": 1,
           "default": ["x86_64", "arm64"]
         },
-        "target_rhoai_version": {
-          "type": "string",
-          "description": "Target RHOAI release version in canonical form x.y or x.y-ea-n (required when product_context is RHOAI)",
-          "pattern": "^\\d+\\.\\d+(-ea-\\d+)?$"
-        },
         "is_operator": {
           "type": "boolean",
           "description": "Whether the component is an operator or controller; controls whether operator manifest paths are required"
@@ -85,21 +80,6 @@
           "type": "string",
           "description": "Destination path in the odh-operator container image where manifests are copied (required when is_operator is true)",
           "minLength": 1
-        },
-        "long_description": {
-          "type": "string",
-          "description": "One or two sentences describing what the component does (required when product_context is RHOAI)",
-          "minLength": 1
-        },
-        "short_description": {
-          "type": "string",
-          "description": "A short noun phrase of a few words summarising the component (required when product_context is RHOAI)",
-          "minLength": 1
-        },
-        "release_category": {
-          "type": "string",
-          "description": "Release maturity category for the component (required when product_context is RHOAI)",
-          "enum": ["Generally Available", "Tech Preview", "Beta"]
         }
       },
       "allOf": [
@@ -118,7 +98,7 @@
             "required": ["product_context"]
           },
           "then": {
-            "required": ["architectures", "target_rhoai_version", "long_description", "short_description", "release_category"]
+            "required": ["architectures"]
           }
         },
         {
