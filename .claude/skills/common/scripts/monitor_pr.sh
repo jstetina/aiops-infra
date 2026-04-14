@@ -37,15 +37,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-EVENTS_LOG="$(dirname "$LOG_FILE")/events.log"
+log() { echo "[monitor-${STEP} $(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
 
-# log: detailed per-step log (polling noise, full output)
-log()   { echo "[${STEP} $(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
-
-# event: significant moments only — written to both the step log and shared events.log
-event() { local msg="[${STEP}] $*"; echo "$msg" >> "$LOG_FILE"; echo "$msg" >> "$EVENTS_LOG"; }
-
-event "Started monitoring $URL (type=$TYPE, timeout=${TIMEOUT_MINUTES}m)"
+log "Started. URL=$URL type=$TYPE timeout=${TIMEOUT_MINUTES}m"
 
 while true; do
   if [[ "$TYPE" == "gitlab" ]]; then
@@ -55,26 +49,27 @@ while true; do
     result=$(uv run --script "$SCRIPTS_DIR/monitor_github_pr.py" \
       --pr-url "$URL" --timeout "$TIMEOUT_MINUTES" 2>>"$LOG_FILE") || true
   else
-    event "ERROR: unknown --type '$TYPE' (must be github or gitlab)"
+    log "ERROR: unknown --type '$TYPE' (must be github or gitlab)"
     exit 1
   fi
 
   case "$result" in
     merged|closed|pipeline_failed|timeout)
       echo "$result" > "$RESULT_FILE"
+      echo "$result" >> "$LOG_FILE"
       if [[ "$result" == "merged" ]]; then
-        event "MERGED — posting Jira update (remove-label: $LABEL_REMOVE)"
+        log "Merged. Posting Jira update (remove-label=$LABEL_REMOVE)..."
         uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
           --remove-label "$LABEL_REMOVE" \
           --comment      "$COMMENT" 2>>"$LOG_FILE" || true
-        event "Jira updated successfully."
+        log "Jira updated."
       else
-        event "Terminal result: $result — no Jira update."
+        log "Terminal result: $result — no Jira update."
       fi
       break
       ;;
     *)
-      event "Connection error or unexpected result ('$result') — retrying in 60s"
+      log "Connection error or unexpected result ('$result'). Retrying in 60s..."
       sleep 60
       ;;
   esac
