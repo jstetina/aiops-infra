@@ -41,10 +41,14 @@ if [[ -z "$TARGET_DIR" ]]; then
   TARGET_DIR="${HOME}/.claude/skills/${SKILL_NAME}"
 fi
 
+COMMON_DIR="${TARGET_DIR}/../common/scripts"
+COMMON_SRC="${SCRIPT_DIR}/../common/scripts"
+
 echo ""
 echo -e "${BOLD}Installing ${SKILL_NAME}${RESET}"
-echo "  Source : ${SCRIPT_DIR}"
-echo "  Target : ${TARGET_DIR}"
+echo "  Source        : ${SCRIPT_DIR}"
+echo "  Target        : ${TARGET_DIR}"
+echo "  Common scripts: ${COMMON_DIR}"
 echo ""
 
 # ── Step 1: Check prerequisites ────────────────────────────────────────────────
@@ -57,18 +61,12 @@ if ! command -v uv &>/dev/null; then
   elif command -v wget &>/dev/null; then
     wget -qO- https://astral.sh/uv/install.sh | sh
   else
-    die "Cannot install 'uv': neither 'curl' nor 'wget' is available. Install uv manually:
-    https://docs.astral.sh/uv/getting-started/installation/"
+    die "Cannot install 'uv': neither 'curl' nor 'wget' is available.
+    Install manually: https://docs.astral.sh/uv/getting-started/installation/"
   fi
-  # The installer adds uv to PATH via shell profile; source the env file if present
-  UV_ENV="${HOME}/.local/bin"
-  if [[ -f "${HOME}/.cargo/env" ]]; then
-    # shellcheck disable=SC1091
-    source "${HOME}/.cargo/env" 2>/dev/null || true
-  fi
-  export PATH="${UV_ENV}:${PATH}"
+  export PATH="${HOME}/.local/bin:${PATH}"
   if ! command -v uv &>/dev/null; then
-    die "uv was installed but is not on PATH. Open a new terminal and re-run this script, or run:
+    die "uv was installed but is not on PATH. Open a new terminal and re-run, or:
     export PATH=\"\${HOME}/.local/bin:\${PATH}\""
   fi
   success "uv installed: $(uv --version 2>/dev/null | head -1 | awk '{print $2}')"
@@ -76,74 +74,71 @@ else
   success "uv $(uv --version 2>/dev/null | head -1 | awk '{print $2}') (already installed)"
 fi
 
-# ── Step 2: Copy skill files ───────────────────────────────────────────────────
-COMMON_SCRIPTS_SRC="${SCRIPT_DIR}/../common/scripts"
-
-info "Creating skill directory..."
-mkdir -p "${TARGET_DIR}/scripts" "${TARGET_DIR}/assets" "${TARGET_DIR}/../common/scripts"
+# ── Step 2: Create directories ─────────────────────────────────────────────────
+info "Creating directories..."
+mkdir -p "${TARGET_DIR}/assets" "${COMMON_DIR}"
 success "Directory ready: ${TARGET_DIR}"
+success "Directory ready: ${COMMON_DIR}"
 
+# ── Step 3: Copy skill files ───────────────────────────────────────────────────
 info "Copying skill files..."
-cp "${SCRIPT_DIR}/SKILL.md"                                  "${TARGET_DIR}/SKILL.md"
-cp "${SCRIPT_DIR}/scripts/fetch_jira_details.py"             "${TARGET_DIR}/scripts/fetch_jira_details.py"
-cp "${SCRIPT_DIR}/scripts/download_jira_attachment.py"       "${TARGET_DIR}/scripts/download_jira_attachment.py"
-cp "${SCRIPT_DIR}/scripts/validate_yaml_schema.py"           "${TARGET_DIR}/scripts/validate_yaml_schema.py"
-cp "${SCRIPT_DIR}/assets/odh_component_details.schema.json"  "${TARGET_DIR}/assets/odh_component_details.schema.json"
+cp "${SCRIPT_DIR}/SKILL.md" "${TARGET_DIR}/SKILL.md"
+cp "${SCRIPT_DIR}/assets/component_onboarding_details.schema.json" \
+   "${TARGET_DIR}/assets/component_onboarding_details.schema.json"
+success "Copied: SKILL.md"
+success "Copied: assets/component_onboarding_details.schema.json"
 
+# ── Step 4: Copy common scripts ───────────────────────────────────────────────
 info "Copying common scripts..."
-if [[ -f "${COMMON_SCRIPTS_SRC}/update_jira_issue.py" ]]; then
-  cp "${COMMON_SCRIPTS_SRC}/update_jira_issue.py" "${TARGET_DIR}/../common/scripts/update_jira_issue.py"
-  success "Common script installed: common/scripts/update_jira_issue.py"
-else
-  die "Common script not found: ${COMMON_SCRIPTS_SRC}/update_jira_issue.py
-  Ensure the full skills directory is present, not just this skill subdirectory."
-fi
 
-# Make Python scripts executable (optional — uv run handles this, but good practice)
-chmod +x "${TARGET_DIR}/scripts/"*.py
-chmod +x "${TARGET_DIR}/../common/scripts/"*.py
-
-success "Files copied:"
-find "${TARGET_DIR}" -type f | sort | while read -r f; do
-  echo "    ${f#"${TARGET_DIR}/"}"
-done
-find "${TARGET_DIR}/../common/scripts" -type f | sort | while read -r f; do
-  echo "    common/scripts/${f##*/}"
-done
-
-# ── Step 3: Install Python dependencies ───────────────────────────────────────
-# Each script declares its own deps via PEP 723 inline metadata.
-# Running them with --help triggers uv to resolve and cache the packages now,
-# so the first real invocation is instant.
-info "Installing Python dependencies..."
-
-declare -A SKILL_SCRIPT_DEPS=(
-  ["fetch_jira_details.py"]="jira>=3.0.0"
-  ["download_jira_attachment.py"]="jira>=3.0.0, requests>=2.31.0"
-  ["validate_yaml_schema.py"]="jsonschema>=4.23.0, pyyaml>=6.0.0"
+COMMON_SCRIPTS=(
+  "fetch_jira_details.py"
+  "download_jira_attachment.py"
+  "validate_yaml_schema.py"
+  "update_jira_issue.py"
 )
 
-ALL_DEPS_OK=true
-for script in "${!SKILL_SCRIPT_DEPS[@]}"; do
-  deps="${SKILL_SCRIPT_DEPS[$script]}"
-  echo -n "    ${script} (${deps}) ... "
-  if uv run --script "${TARGET_DIR}/scripts/${script}" --help >/dev/null 2>&1; then
-    echo -e "${GREEN}OK${RESET}"
+for script in "${COMMON_SCRIPTS[@]}"; do
+  src="${COMMON_SRC}/${script}"
+  if [[ -f "$src" ]]; then
+    cp "$src" "${COMMON_DIR}/${script}"
+    success "Copied: common/scripts/${script}"
   else
-    echo -e "${RED}FAILED${RESET}"
-    warn "Could not pre-install deps for ${script}. They will be fetched on first use."
-    ALL_DEPS_OK=false
+    die "Source script not found: ${src}
+  Ensure the full skills directory is present, not just this skill subdirectory."
   fi
 done
 
-echo -n "    update_jira_issue.py (jira>=3.0.0) ... "
-if uv run --script "${TARGET_DIR}/../common/scripts/update_jira_issue.py" --help >/dev/null 2>&1; then
-  echo -e "${GREEN}OK${RESET}"
-else
-  echo -e "${RED}FAILED${RESET}"
-  warn "Could not pre-install deps for update_jira_issue.py. They will be fetched on first use."
-  ALL_DEPS_OK=false
-fi
+# ── Step 5: Set permissions ────────────────────────────────────────────────────
+info "Setting permissions..."
+for pyfile in "${COMMON_DIR}"/*.py; do
+  [[ -f "$pyfile" ]] && chmod +x "$pyfile"
+done
+success "Permissions set."
+
+# ── Step 6: Pre-warm Python dependencies ──────────────────────────────────────
+info "Pre-warming Python script dependencies..."
+echo "  (This downloads and caches packages so the first skill invocation is instant)"
+
+ALL_DEPS_OK=true
+
+pre_warm() {
+  local label="$1"
+  local path="$2"
+  echo -n "    ${label} ... "
+  if uv run --script "$path" --help >/dev/null 2>&1; then
+    echo -e "${GREEN}OK${RESET}"
+  else
+    echo -e "${RED}FAILED${RESET}"
+    warn "Could not pre-install deps for ${label}. They will be fetched on first use."
+    ALL_DEPS_OK=false
+  fi
+}
+
+pre_warm "fetch_jira_details.py"       "${COMMON_DIR}/fetch_jira_details.py"
+pre_warm "download_jira_attachment.py" "${COMMON_DIR}/download_jira_attachment.py"
+pre_warm "validate_yaml_schema.py"     "${COMMON_DIR}/validate_yaml_schema.py"
+pre_warm "update_jira_issue.py"        "${COMMON_DIR}/update_jira_issue.py"
 
 if $ALL_DEPS_OK; then
   success "All Python dependencies installed and cached."
@@ -151,36 +146,31 @@ else
   warn "Some dependencies could not be pre-installed. uv will retry on first skill invocation."
 fi
 
-# ── Step 4: Verify installed files ────────────────────────────────────────────
+# ── Step 7: Verify installed files ────────────────────────────────────────────
 info "Verifying installation..."
+
 REQUIRED_FILES=(
-  "SKILL.md"
-  "scripts/fetch_jira_details.py"
-  "scripts/download_jira_attachment.py"
-  "scripts/validate_yaml_schema.py"
-  "assets/odh_component_details.schema.json"
+  "${TARGET_DIR}/SKILL.md"
+  "${TARGET_DIR}/assets/component_onboarding_details.schema.json"
+  "${COMMON_DIR}/fetch_jira_details.py"
+  "${COMMON_DIR}/download_jira_attachment.py"
+  "${COMMON_DIR}/validate_yaml_schema.py"
+  "${COMMON_DIR}/update_jira_issue.py"
 )
+
 ALL_OK=true
 for f in "${REQUIRED_FILES[@]}"; do
-  if [[ -f "${TARGET_DIR}/${f}" ]]; then
-    success "${f}"
+  if [[ -f "$f" ]]; then
+    success "${f#"${TARGET_DIR}/../"}"
   else
-    error "Missing: ${f}"
+    error "Missing: $f"
     ALL_OK=false
   fi
 done
 
-COMMON_SCRIPT="${TARGET_DIR}/../common/scripts/update_jira_issue.py"
-if [[ -f "${COMMON_SCRIPT}" ]]; then
-  success "common/scripts/update_jira_issue.py"
-else
-  error "Missing: common/scripts/update_jira_issue.py"
-  ALL_OK=false
-fi
-
 $ALL_OK || die "Installation incomplete — some files are missing."
 
-# ── Step 5: Check environment variables ───────────────────────────────────────
+# ── Step 8: Check environment variables ───────────────────────────────────────
 echo ""
 info "Checking Jira credentials..."
 CREDS_OK=true
@@ -213,7 +203,7 @@ if ! $CREDS_OK; then
   echo "    export JIRA_API_TOKEN='your-api-token'"
   echo "    # export JIRA_SERVER='https://redhat.atlassian.net'  # optional"
   echo ""
-  echo -e "  Create an Atlassian API token at:"
+  echo "  Create an Atlassian API token at:"
   echo "    https://id.atlassian.com/manage-profile/security/api-tokens"
 fi
 

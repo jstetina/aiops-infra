@@ -1,16 +1,16 @@
 ---
 name: run-odh-konflux-onboarder-workflow
-description: Triggers the odh-konflux-onboarder GitHub Actions workflow in odh-konflux-central, extracts the resulting Tekton PR URL from workflow logs, and records it for tracking by the parent orchestrator. Automates Step 5 of the ODH component onboarding pipeline.
-allowed-tools: Bash
+description: Triggers the odh-konflux-onboarder GitHub Actions workflow in odh-konflux-central, monitors it to completion, extracts the Tekton PR URL from workflow logs, and updates the Jira issue. Automates Step 6 of the ODH component onboarding pipeline.
+allowed-tools: Bash, Read, Write
 user-invocable: true
 ---
 
 # Run ODH Konflux Onboarder Workflow
 
 Triggers the `odh-konflux-onboarder` GitHub Actions workflow in the
-`odh-konflux-central` repository, extracts the resulting Tekton PR URL from the
-workflow logs, and records it for tracking by the parent orchestrator. Jira is
-updated with the PR URL; merge tracking is handled on the next orchestrator re-run.
+`odh-konflux-central` repository, monitors it to completion, extracts the
+Tekton PR URL from the workflow logs, and optionally updates the Jira issue with
+progress labels and comments.
 
 This is **Step 6** of the ODH component onboarding pipeline ("Run CI/Nightly Build").
 
@@ -59,12 +59,20 @@ COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
 Extract the optional `<jira-url>` argument from the invocation.
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/parse_jira_url.sh" "${1:-}")"
-echo "JIRA_URL : ${JIRA_URL:-(not provided)}"
-echo "JIRA_ID  : ${JIRA_ID:-(not provided)}"
-```
+JIRA_URL="${1:-}"   # first argument, or empty
 
-```bash
+# Validate format if provided
+if [[ -n "$JIRA_URL" && "$JIRA_URL" != *"/browse/"* ]]; then
+  echo "ERROR: Invalid Jira URL. Expected format: https://redhat.atlassian.net/browse/RHODS-14226"
+  exit 1
+fi
+
+# Extract Jira ID from URL (last path segment, e.g. RHODS-14226)
+JIRA_ID=""
+if [[ -n "$JIRA_URL" ]]; then
+  JIRA_ID="${JIRA_URL##*/}"
+fi
+
 # Resolve OKC repo URL — single source of truth for all GitHub operations
 OKC_URL="${ODH_KONFLUX_CENTRAL_REPO_URL:-https://github.com/opendatahub-io/odh-konflux-central.git}"
 echo "ODH_KONFLUX_CENTRAL_REPO_URL=${ODH_KONFLUX_CENTRAL_REPO_URL:-(not set, using default)}"
@@ -91,13 +99,36 @@ WORKFLOW_FILE=".github/workflows/odh-konflux-onboarder.yml"
 Check in order. Stop with a remediation message if any check fails.
 
 ```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
-  --env "GITHUB_USER GITHUB_TOKEN" \
-  --tools "uv"
+# 1. GITHUB_USER
+if [[ -z "${GITHUB_USER:-}" ]]; then
+  echo "ERROR: GITHUB_USER is not set. export GITHUB_USER=yourusername"
+  exit 1
+fi
 
-# Jira credentials are only required when a Jira URL is given
+# 2. GITHUB_TOKEN
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+  echo "ERROR: GITHUB_TOKEN is not set. export GITHUB_TOKEN=yourtoken"
+  echo "  Token needs: repo scope + actions:write scope"
+  exit 1
+fi
+
+# 3. Jira credentials (only when JIRA_URL is non-empty)
 if [[ -n "$JIRA_URL" ]]; then
-  bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" --env "JIRA_USER_EMAIL JIRA_API_TOKEN"
+  if [[ -z "${JIRA_USER_EMAIL:-}" ]]; then
+    echo "ERROR: JIRA_USER_EMAIL is not set. export JIRA_USER_EMAIL=you@redhat.com"
+    exit 1
+  fi
+  if [[ -z "${JIRA_API_TOKEN:-}" ]]; then
+    echo "ERROR: JIRA_API_TOKEN is not set."
+    echo "  Create at: https://id.atlassian.com/manage-profile/security/api-tokens"
+    exit 1
+  fi
+fi
+
+# 4. uv
+if ! command -v uv &>/dev/null; then
+  echo "ERROR: uv is not installed. curl -LsSf https://astral.sh/uv/install.sh | sh"
+  exit 1
 fi
 ```
 
@@ -106,9 +137,15 @@ fi
 ## Step 2: Set Up Working Directory
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/init_workdir.sh" --jira-url "${JIRA_URL:-}")"
-YAML_PATH="${WORKDIR}/component_onboarding_details.yaml"
+if [[ -n "$JIRA_ID" ]]; then
+  WORKDIR="$(pwd)/${JIRA_ID}"
+else
+  WORKDIR="$(pwd)"
+fi
+mkdir -p "$WORKDIR"
 echo "Working directory: $WORKDIR"
+
+YAML_PATH="${WORKDIR}/component_onboarding_details.yaml"
 ```
 
 ---
@@ -143,17 +180,7 @@ ERROR in Step 3 (Download YAML): 'component_onboarding_details.yaml' not found a
   Jira attachment. Please attach the file to the Jira issue and re-run.
 ```
 
-**3A-3. Parse YAML.** Parse `$YAML_PATH` to extract inputs:
-
-```bash
-PRODUCT_CONTEXT=$(grep -m1 'product_context:' "$YAML_PATH" | awk '{print $2}')
-REPO_URL=$(grep -m1 'repo_url:' "$YAML_PATH" | awk '{print $2}')
-PR_TARGET_BRANCH=$(grep -m1 'repo_branch:' "$YAML_PATH" | awk '{print $2}')
-BUILD_TYPE=$(grep -m1 'build_type:' "$YAML_PATH" | awk '{print $2}' 2>/dev/null || echo "")
-VERSION=$(grep -m1 'output_image_tag:' "$YAML_PATH" | awk '{print $2}' 2>/dev/null || echo "")
-```
-
-The extracted values correspond to the following inputs:
+**3A-3. Parse YAML.** Use the `Read` tool to read `$YAML_PATH`. Extract under `inputs:`:
 
 | Variable | YAML field | Notes |
 |----------|-----------|-------|
@@ -281,16 +308,8 @@ Proceed? (yes / no)
 
 **Skip this step if `JIRA_URL` is empty.**
 
-Scan `$WORKDIR/component_onboarding_details.json` Jira comments for GitHub PR URLs:
-
-```bash
-EXISTING_PR_URLS=$(jq -r '.fields.comment.comments[].body' \
-  "$WORKDIR/component_onboarding_details.json" 2>/dev/null \
-  | grep -oE 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/pull/[0-9]+' \
-  | sort -u || true)
-```
-
-Scan the matched URLs for GitHub PR URLs matching:
+Use the `Read` tool to read `$WORKDIR/component_onboarding_details.json`.
+Scan `fields.comment.comments[].body` for GitHub PR URLs matching:
 ```
 https://github\.com/[^/\s]+/[^/\s]+/pull/\d+
 ```
@@ -375,7 +394,9 @@ PR target branch: $PR_TARGET_BRANCH
 Build type      : $BUILD_TYPE${VERSION:+
 Version         : $VERSION}
 
-Workflow run: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}"
+Workflow run: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
+
+Monitoring in progress (max 30 minutes)..."
 ```
 
 ---
@@ -533,7 +554,9 @@ Component        : $COMPONENT
 PR target branch : $PR_TARGET_BRANCH
 Build type       : $BUILD_TYPE${VERSION:+
 Version          : $VERSION}
-Workflow run     : https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}"
+Workflow run     : https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
+
+Monitoring the PR for merge..."
 ```
 
 On exit 1: display stderr but **do not abort** — the PR URL has been found, so log
@@ -541,7 +564,82 @@ the Jira error as a warning and continue to Step 10.
 
 ---
 
-## Step 10: Final Status Report
+## Step 10: Monitor the Tekton PR
+
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/monitor_github_pr.py \
+  --pr-url "$TEKTON_PR_URL" \
+  --timeout 60
+```
+
+Read the stdout result:
+
+**`merged` (exit 0):** PR merged.
+
+If `JIRA_URL` is non-empty:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+  --remove-label "tekton-pr-raised" \
+  --add-label "tekton-pr-merged" \
+  --comment "Tekton PR merged: $TEKTON_PR_URL
+
+Konflux CI pipeline definitions for '$COMPONENT' are now live on '$PR_TARGET_BRANCH'.
+
+Step 6 (Run CI/Nightly Build) is complete."
+```
+Print: `PR merged. Step 6 (Run CI/Nightly Build) complete.`
+Continue to Step 11.
+
+**`closed` (exit 1):** PR closed without merging.
+
+If `JIRA_URL` is non-empty:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+  --comment "Tekton PR was closed without merging: $TEKTON_PR_URL
+
+Please review and re-trigger if needed."
+```
+Stop with:
+```
+ERROR in Step 10: PR was closed without merging.
+PR: $TEKTON_PR_URL
+```
+
+**`pipeline_failed` or `pipeline_canceled` (exit 1):** CI checks failed on the PR.
+
+Display the failure to the user. If `JIRA_URL` is non-empty:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+  --comment "CI checks failed on Tekton PR: $TEKTON_PR_URL
+
+Please review the PR checks and push a fix, then re-run this skill to resume monitoring."
+```
+Stop with:
+```
+ERROR in Step 10: CI checks failed on PR $TEKTON_PR_URL.
+Manual intervention required — review the PR and push a fix, then re-run.
+```
+
+**`timeout` (exit 1):** PR still open after 60 minutes.
+
+If `JIRA_URL` is non-empty:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+  --comment "PR monitoring timed out after 60 minutes. PR is still open: $TEKTON_PR_URL
+
+Re-run /run-odh-konflux-onboarder-workflow to resume — at Step 5 it will detect the
+existing PR and jump straight to monitoring."
+```
+Print:
+```
+WARNING: PR monitoring timed out after 60 minutes.
+PR is still open: $TEKTON_PR_URL
+Re-run this skill to resume monitoring (Step 5 will skip triggering a new run).
+```
+
+---
+
+## Step 11: Final Status Report
 
 Print:
 ```
@@ -553,11 +651,11 @@ Print:
   Version               : $VERSION}
 
   Workflow run          : https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
-  Tekton PR             : $TEKTON_PR_URL (raised — awaiting merge)
+  Tekton PR             : $TEKTON_PR_URL (merged)
 
   Jira updated          : ${JIRA_URL:-(no Jira URL provided)}
 
-Tekton PR raised. Re-run the parent orchestrator after the PR merges to advance the pipeline.
+Step 6 (Run CI/Nightly Build) complete.
 ```
 
 ---
@@ -582,3 +680,6 @@ Tekton PR raised. Re-run the parent orchestrator after the PR merges to advance 
 | Workflow run cancelled | 7 | Re-trigger manually or re-run the skill |
 | Workflow monitoring timeout | 7 | Re-run skill — Step 5 will detect existing PR |
 | "Create pull request" step not found | 8 | Paste PR URL manually when prompted |
+| PR CI checks failed | 10 | Review PR checks; push fix; re-run |
+| PR closed without merge | 10 | Review and re-run |
+| PR monitoring timeout | 10 | Re-run skill — Step 5 detects existing PR and skips triggering |

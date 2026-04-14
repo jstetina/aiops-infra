@@ -43,15 +43,12 @@ fi
 
 COMMON_DIR="${TARGET_DIR}/../common/scripts"
 COMMON_SRC="${SCRIPT_DIR}/../common/scripts"
-VALIDATE_SKILL_DIR="${TARGET_DIR}/../validate-component-onboarding-jira"
-VALIDATE_SKILL_SRC="${SCRIPT_DIR}/../validate-component-onboarding-jira"
 
 echo ""
 echo -e "${BOLD}Installing ${SKILL_NAME}${RESET}"
 echo "  Source        : ${SCRIPT_DIR}"
 echo "  Target        : ${TARGET_DIR}"
 echo "  Common scripts: ${COMMON_DIR}"
-echo "  Validate skill: ${VALIDATE_SKILL_DIR}"
 echo ""
 
 # ── Step 1: Check prerequisites ────────────────────────────────────────────────
@@ -94,10 +91,9 @@ fi
 
 # ── Step 2: Create directories ─────────────────────────────────────────────────
 info "Creating directories..."
-mkdir -p "${TARGET_DIR}" "${COMMON_DIR}" "${VALIDATE_SKILL_DIR}/scripts"
+mkdir -p "${TARGET_DIR}" "${COMMON_DIR}"
 success "Directory ready: ${TARGET_DIR}"
 success "Directory ready: ${COMMON_DIR}"
-success "Directory ready: ${VALIDATE_SKILL_DIR}/scripts"
 
 # ── Step 3: Copy skill files ───────────────────────────────────────────────────
 info "Copying skill files..."
@@ -112,6 +108,8 @@ COMMON_SCRIPTS=(
   "raise_github_pr.py"
   "monitor_github_pr.py"
   "update_jira_issue.py"
+  "fetch_jira_details.py"
+  "download_jira_attachment.py"
 )
 
 for script in "${COMMON_SCRIPTS[@]}"; do
@@ -125,29 +123,10 @@ for script in "${COMMON_SCRIPTS[@]}"; do
   fi
 done
 
-# ── Step 5: Copy validate-component-onboarding-jira scripts ───────────────────
-info "Copying validate-component-onboarding-jira scripts (for Jira fetch/download)..."
-
-VALIDATE_SCRIPTS=(
-  "fetch_jira_details.py"
-  "download_jira_attachment.py"
-)
-
-for script in "${VALIDATE_SCRIPTS[@]}"; do
-  src="${VALIDATE_SKILL_SRC}/scripts/${script}"
-  if [[ -f "$src" ]]; then
-    cp "$src" "${VALIDATE_SKILL_DIR}/scripts/${script}"
-    success "Copied: validate-component-onboarding-jira/scripts/${script}"
-  else
-    die "Source script not found: ${src}
-  Ensure the validate-component-onboarding-jira skill is present alongside this skill."
-  fi
-done
-
-# ── Step 6: Set permissions ────────────────────────────────────────────────────
+# ── Step 5: Set permissions ────────────────────────────────────────────────────
 info "Setting permissions..."
 chmod +x "${COMMON_DIR}/setup_github_playpen.sh"
-for pyfile in "${COMMON_DIR}"/*.py "${VALIDATE_SKILL_DIR}/scripts"/*.py; do
+for pyfile in "${COMMON_DIR}"/*.py; do
   [[ -f "$pyfile" ]] && chmod +x "$pyfile"
 done
 success "Permissions set."
@@ -177,8 +156,8 @@ pre_warm "monitor_github_pr.py" "${COMMON_DIR}/monitor_github_pr.py"
 
 # Jira scripts
 pre_warm "update_jira_issue.py"           "${COMMON_DIR}/update_jira_issue.py"
-pre_warm "fetch_jira_details.py"          "${VALIDATE_SKILL_DIR}/scripts/fetch_jira_details.py"
-pre_warm "download_jira_attachment.py"    "${VALIDATE_SKILL_DIR}/scripts/download_jira_attachment.py"
+pre_warm "fetch_jira_details.py"          "${COMMON_DIR}/fetch_jira_details.py"
+pre_warm "download_jira_attachment.py"    "${COMMON_DIR}/download_jira_attachment.py"
 
 if $ALL_DEPS_OK; then
   success "All Python dependencies installed and cached."
@@ -195,8 +174,8 @@ REQUIRED_FILES=(
   "${COMMON_DIR}/raise_github_pr.py"
   "${COMMON_DIR}/monitor_github_pr.py"
   "${COMMON_DIR}/update_jira_issue.py"
-  "${VALIDATE_SKILL_DIR}/scripts/fetch_jira_details.py"
-  "${VALIDATE_SKILL_DIR}/scripts/download_jira_attachment.py"
+  "${COMMON_DIR}/fetch_jira_details.py"
+  "${COMMON_DIR}/download_jira_attachment.py"
 )
 
 ALL_OK=true
@@ -282,5 +261,5 @@ echo ""
 echo "  NOTE: This skill requires:"
 echo "    - Public internet access to github.com (no VPN needed)"
 echo "    - GITHUB_TOKEN with 'repo' scope (read + write on odh-konflux-central)"
-echo "    - 'odh_component_details.yaml' attached to the Jira issue"
+echo "    - 'component_onboarding_details.yaml' attached to the Jira issue"
 echo ""

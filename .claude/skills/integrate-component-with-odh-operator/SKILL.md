@@ -1,14 +1,13 @@
 ---
 name: integrate-component-with-odh-operator
-description: Updates the operator repository (opendatahub-io/opendatahub-operator for ODH, red-hat-data-services/rhods-operator for RHOAI) to include a new operator component in build/manifests-config.yaml and raises a GitHub PR. Exits cleanly (no-op) when is_operator=false. Automates Step 9 of the ODH/RHOAI component onboarding pipeline.
-allowed-tools: Bash
+description: Updates the opendatahub-operator repository to include a new operator component in build/manifests-config.yaml and raises a GitHub PR. Exits cleanly (no-op) when is_operator=false. Automates Step 9 of the ODH component onboarding pipeline.
+allowed-tools: Bash, Read, Edit, Write
 user-invocable: true
 ---
 
 # Integrate Component with ODH Operator
 
-Adds a new operator component to the operator repository (`opendatahub-operator` for ODH,
-`rhods-operator` for RHOAI) by:
+Adds a new operator component to `opendatahub-operator` by:
 1. Reading the component's onboarding YAML from the Jira ticket.
 2. Exiting cleanly if `is_operator: false` — nothing to do.
 3. Adding a new entry to `build/manifests-config.yaml` in the operator repo.
@@ -16,14 +15,9 @@ Adds a new operator component to the operator repository (`opendatahub-operator`
 
 > **CRITICAL — `ODH_OPERATOR_URL` is the single source of truth for every Git and GitHub
 > operation in this skill.**
-> It is resolved in Step 3d by `resolve_operator_url.sh`, which checks the
-> `ODH_OPERATOR_REPO_URL` env var first (override) and falls back to the product-context
-> default (ODH → `opendatahub-io/opendatahub-operator`;
-> RHOAI → `red-hat-data-services/rhods-operator`).
-> **Never set `ODH_OPERATOR_URL` or `ODH_OPERATOR_PATH` manually.** Always use the values
-> produced by the script. Every clone, push, and PR call (`--src-url`, `--dest-url`) **must**
-> use `$ODH_OPERATOR_URL` — never a hardcoded URL. `ODH_OPERATOR_PATH` (also set by the
-> script) must be used for all GitHub API calls.
+> It is resolved once in Step 0 from `ODH_OPERATOR_REPO_URL` (or the default).
+> Every clone, push, and PR call (`--src-url`, `--dest-url`) **must** use `$ODH_OPERATOR_URL`
+> — never the hardcoded upstream URL `https://github.com/opendatahub-io/opendatahub-operator.git`.
 > This rule applies for the entire skill execution even if the URL resolves to a fork.
 
 ## Usage
@@ -45,10 +39,7 @@ Examples:
 - `JIRA_API_TOKEN` — Atlassian API token (https://id.atlassian.com/manage-profile/security/api-tokens)
 - `uv` — Python runner (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - `git`
-- Optional: `ODH_OPERATOR_REPO_URL` — overrides the target operator repo. If not set, the
-  default is derived from `product_context`:
-  - `ODH` → `https://github.com/opendatahub-io/opendatahub-operator.git`
-  - `RHOAI` → `https://github.com/red-hat-data-services/rhods-operator.git`
+- Optional: `ODH_OPERATOR_REPO_URL` (default: `https://github.com/opendatahub-io/opendatahub-operator.git`)
 - Optional: `JIRA_SERVER` (default: `https://redhat.atlassian.net`)
 
 **Jira attachment:** The Jira issue must have `component_onboarding_details.yaml` attached
@@ -58,9 +49,6 @@ Examples:
 
 SKILL_DIR is the absolute path of the directory containing this SKILL.md.
 COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
-
-If invoked with `--existing-pr-url <url>`: print 'PR already raised: <url>' and exit 0. The orchestrator passes this when the URL is already recorded in pipeline_state.json.
-
 ---
 
 ## Step 0: Parse Inputs
@@ -71,10 +59,23 @@ If invoked with `--existing-pr-url <url>`: print 'PR already raised: <url>' and 
    If the argument cannot be parsed as a Jira URL (no `/browse/` segment), stop with:
    > ERROR: Invalid Jira URL. Expected format: https://redhat.atlassian.net/browse/RHODS-14226
 
-2. `ODH_OPERATOR_URL` and `ODH_OPERATOR_PATH` will be resolved in Step 3d by the
-   `resolve_operator_url.sh` script. Do **not** set `ODH_OPERATOR_URL` or
-   `ODH_OPERATOR_PATH` manually in any step — the script handles the
-   `ODH_OPERATOR_REPO_URL` env-var override and product-context defaults.
+2. Resolve `ODH_OPERATOR_URL`. Execute this exact block; do NOT skip the `echo`:
+
+   ```bash
+   ODH_OPERATOR_URL="${ODH_OPERATOR_REPO_URL:-https://github.com/opendatahub-io/opendatahub-operator.git}"
+   echo "ODH_OPERATOR_REPO_URL=${ODH_OPERATOR_REPO_URL:-(not set, using default)}"
+   echo "ODH_OPERATOR_URL resolved to: $ODH_OPERATOR_URL"
+   ```
+
+   The `echo` output confirms which repo is active for the entire skill run.
+   **Never override or re-derive `ODH_OPERATOR_URL` in later steps.** If any step appears
+   to use a different URL, that is a bug — stop and correct it.
+
+3. Parse `ODH_OPERATOR_URL` to extract owner and repo path for GitHub API calls:
+   ```bash
+   ODH_OPERATOR_PATH=$(echo "$ODH_OPERATOR_URL" | sed 's|https://github.com/||;s|\.git$||')
+   # e.g. "opendatahub-io/opendatahub-operator"
+   ```
 
 ---
 
@@ -83,9 +84,24 @@ If invoked with `--existing-pr-url <url>`: print 'PR already raised: <url>' and 
 Check in order. Stop with a remediation message if any check fails.
 
 ```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
-  --env "GITHUB_USER GITHUB_TOKEN JIRA_USER_EMAIL JIRA_API_TOKEN" \
-  --tools "uv git"
+if [[ -z "${GITHUB_USER:-}" ]]; then
+  echo "ERROR: GITHUB_USER is not set. export GITHUB_USER=yourusername"; exit 1
+fi
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+  echo "ERROR: GITHUB_TOKEN is not set. export GITHUB_TOKEN=yourtoken"; exit 1
+fi
+if [[ -z "${JIRA_USER_EMAIL:-}" ]]; then
+  echo "ERROR: JIRA_USER_EMAIL is not set. export JIRA_USER_EMAIL=you@example.com"; exit 1
+fi
+if [[ -z "${JIRA_API_TOKEN:-}" ]]; then
+  echo "ERROR: JIRA_API_TOKEN is not set. export JIRA_API_TOKEN=your-api-token"; exit 1
+fi
+if ! command -v uv &>/dev/null; then
+  echo "ERROR: uv is not installed. curl -LsSf https://astral.sh/uv/install.sh | sh"; exit 1
+fi
+if ! command -v git &>/dev/null; then
+  echo "ERROR: git is not installed."; exit 1
+fi
 ```
 
 ---
@@ -93,8 +109,10 @@ bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
 ## Step 2: Set Up Working Directory
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/init_workdir.sh" --jira-url "$JIRA_URL")"
+WORKDIR="$(pwd)/<jira-id>"
+mkdir -p "$WORKDIR"
 echo "Working directory: $WORKDIR"
+cd "$WORKDIR"
 ```
 
 ---
@@ -107,10 +125,8 @@ This step ensures both `component_onboarding_details.json` (full Jira issue) and
 **3a. Fetch Jira issue details** (skip if `$WORKDIR/component_onboarding_details.json` already exists):
 
 ```bash
-if [[ ! -f "$WORKDIR/component_onboarding_details.json" ]]; then
-  cd "$WORKDIR"
-  uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py <jira-url>
-fi
+cd "$WORKDIR"
+uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py <jira-url>
 ```
 
 On exit 1: display stderr and stop with:
@@ -152,27 +168,6 @@ If any of COMPONENT_NAME, PRODUCT_CONTEXT, IS_OPERATOR, REPO_URL, REPO_BRANCH is
 ERROR in Step 3c: Missing required field '<field>' in component_onboarding_details.yaml. Aborting.
 ```
 
-**3d. Resolve `ODH_OPERATOR_URL` and `ODH_OPERATOR_PATH`:**
-
-Run the `resolve_operator_url.sh` script. This script checks the `ODH_OPERATOR_REPO_URL`
-env var first (override), then falls back to the product-context default. You **must** use
-`eval` so the exported variables are available in subsequent steps.
-
-```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/resolve_operator_url.sh" \
-  --product-context "$PRODUCT_CONTEXT")"
-echo "ODH_OPERATOR_URL:  $ODH_OPERATOR_URL"
-echo "ODH_OPERATOR_PATH: $ODH_OPERATOR_PATH"
-```
-
-On exit 1: display stderr and stop with:
-```
-ERROR in Step 3d: Could not resolve operator URL. See details above.
-```
-
-**`ODH_OPERATOR_URL` and `ODH_OPERATOR_PATH` are now fixed for the remainder of the skill.
-Never hardcode a URL — always use `$ODH_OPERATOR_URL` and `$ODH_OPERATOR_PATH`.**
-
 ---
 
 ## Step 4: Check is_operator Gate
@@ -184,7 +179,7 @@ uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
   --add-label "operator-changes-not-needed" \
   --comment "Skipping odh-operator integration for '$COMPONENT_NAME'.
 
-is_operator=false in component_onboarding_details.yaml. No changes to the operator repo (${ODH_OPERATOR_PATH}) are required for this component."
+is_operator=false in component_onboarding_details.yaml. No changes to opendatahub-operator are required for this component."
 ```
 
 Print:
@@ -220,7 +215,7 @@ is_operator=true. Proceeding with odh-operator integration.
 Before cloning the repo, check whether `$COMPONENT_NAME` already has an entry in the
 `map:` object of `build/manifests-config.yaml` on the **`main` branch** of `$ODH_OPERATOR_URL`.
 
-> **Reminder:** Use `$ODH_OPERATOR_PATH` (derived from `$ODH_OPERATOR_URL` in Step 3d) for
+> **Reminder:** Use `$ODH_OPERATOR_PATH` (derived from `$ODH_OPERATOR_URL` in Step 0) for
 > the GitHub API URL. Do NOT substitute the hardcoded upstream path.
 
 Fetch the raw file content from the GitHub API:
@@ -265,7 +260,7 @@ If `ENTRY_EXISTS=true`:
 ```bash
 uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
   --add-label "odh-operator-pr-raised" \
-  --comment "'$COMPONENT_NAME' is already present in build/manifests-config.yaml on the main branch of ${ODH_OPERATOR_PATH}.
+  --comment "'$COMPONENT_NAME' is already present in build/manifests-config.yaml on the main branch of opendatahub-operator.
 
 No changes are needed. The odh-operator integration for this component is already complete."
 ```
@@ -286,10 +281,56 @@ rm -f "$MANIFESTS_TMPFILE"
 
 ---
 
-## Step 6: Set Up Playpen (Clone)
+## Step 6: Check for Existing Open PR in Jira Comments
 
-> **Reminder:** Pass `--src-url "$ODH_OPERATOR_URL"` — the URL finalised in Step 3d
-> (or Step 0 if `ODH_OPERATOR_REPO_URL` was explicitly set). Do NOT hardcode the URL here.
+Use the `Read` tool to read `$WORKDIR/component_onboarding_details.json`.
+
+Search the array at `fields.comment.comments[].body` for GitHub PR URLs matching:
+```
+https://github\.com/[^/\s]+/opendatahub-operator/pull/\d+
+```
+
+For each URL found, run:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/monitor_github_pr.py \
+  --pr-url <found-url> --check-only
+```
+
+Parse stdout:
+
+- If `state=open` **and** `title=` contains `$COMPONENT_NAME`:
+  ```bash
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+    --comment "Existing open GitHub PR found for '$COMPONENT_NAME' in opendatahub-operator: <found-url>.
+
+No new PR will be raised. Review and merge the existing PR to complete this step."
+  ```
+  Print:
+  ```
+  Found existing open PR for $COMPONENT_NAME: <found-url>
+  Jira updated. No new PR raised — review and merge the existing PR.
+  ```
+  **Stop with exit 0.**
+
+- If `state=merged`:
+  ```bash
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
+    --add-label "odh-operator-changes-done" \
+    --comment "odh-operator PR for '$COMPONENT_NAME' was already merged: <found-url>. No action needed.
+
+Step 9 (Integrate with odh-operator) is complete."
+  ```
+  Print: `PR already merged. Step 9 (odh-operator integration) is complete.`
+  **Stop with exit 0.**
+
+If no matching PR is found, continue to Step 7.
+
+---
+
+## Step 7: Set Up Playpen (Clone)
+
+> **Reminder:** Pass `--src-url "$ODH_OPERATOR_URL"` — the URL resolved in Step 0.
+> Do NOT hardcode the upstream URL here.
 
 Run from inside `$WORKDIR`:
 
@@ -322,68 +363,79 @@ git push origin "<jira-id>"
 
 ---
 
-## Step 7: Update manifests-config.yaml
+## Step 8: Update manifests-config.yaml
 
-Check the file exists:
+Use the `Read` tool to read `$CLONE_DIR/build/manifests-config.yaml`.
 
-```bash
-[[ -f "$CLONE_DIR/build/manifests-config.yaml" ]] || {
-  echo "ERROR in Step 8: build/manifests-config.yaml not found in $CLONE_DIR."
-  echo "  Verify that $ODH_OPERATOR_URL points to the correct operator repository."
-  exit 1
-}
+If the file does not exist, stop with:
+```
+ERROR in Step 8: build/manifests-config.yaml not found in $CLONE_DIR.
+  Verify that $ODH_OPERATOR_URL points to the correct opendatahub-operator repository.
 ```
 
-**Check if `$COMPONENT_NAME` already exists under `map:` and insert if not:**
-
-```bash
-if grep -q "^  ${COMPONENT_NAME}:" "$CLONE_DIR/build/manifests-config.yaml" 2>/dev/null; then
-  echo "$COMPONENT_NAME already in manifests-config.yaml — skipping edit."
-  # Continue to Step 9 (commit and push are still needed for the PR branch)
-else
-  uv run --script "$COMMON_SCRIPTS_DIR/edit_yaml.py" insert-map-key \
-    "$CLONE_DIR/build/manifests-config.yaml" \
-    --map-key "map" \
-    --name "$COMPONENT_NAME" \
-    --src  "$OPERATOR_MANIFEST_SRC_PATH" \
-    --dest "$OPERATOR_MANIFEST_DEST_PATH"
-fi
+Locate the `map:` key. It will contain existing entries like:
+```yaml
+map:
+  existing-component:
+    src: path/to/manifests
+    dest: opt/manifests/existing-component
+  another-component:
+    src: config/manifests
+    dest: opt/manifests/another-component
 ```
 
-On exit 1 from `edit_yaml.py`: display stderr and stop with:
-```
-ERROR in Step 8 (Update manifests-config.yaml): Could not insert component entry. See details above. Aborting.
-```
+**Check if `$COMPONENT_NAME` already exists under `map:`:**
 
-Verify the entry was written:
+- **Already present**: Print `$COMPONENT_NAME already in manifests-config.yaml — skipping edit.`
+  Continue to Step 9 (commit and push are still needed so the branch has a commit for the PR).
 
-```bash
-grep -q "^  ${COMPONENT_NAME}:" "$CLONE_DIR/build/manifests-config.yaml" \
-  || { echo "ERROR: $COMPONENT_NAME not found in manifests-config.yaml after insert."; exit 1; }
-```
+- **Not present**: Use the `Edit` tool to insert the new entry under `map:` in **alphabetical
+  order** among existing component keys. The entry format is:
+  ```yaml
+    <COMPONENT_NAME>:
+      src: <OPERATOR_MANIFEST_SRC_PATH>
+      dest: <OPERATOR_MANIFEST_DEST_PATH>
+  ```
+  Match the indentation of surrounding entries (2 spaces for the component key under `map:`,
+  4 spaces for `src:` and `dest:`).
+
+After editing, verify with the `Read` tool that:
+- `$COMPONENT_NAME:` is present under `map:`
+- `src: $OPERATOR_MANIFEST_SRC_PATH` is present and correctly indented
+- `dest: $OPERATOR_MANIFEST_DEST_PATH` is present and correctly indented
+- No surrounding entries have been disturbed
+
+If verification fails, fix with another `Edit` call before continuing.
 
 ---
 
-## Step 8: Commit and Push
+## Step 9: Commit and Push
 
 > **Reminder:** `origin` was set to `$ODH_OPERATOR_URL` by `setup_github_playpen.sh` in Step 7.
+> Pushing to `origin` is correct — do NOT change the remote URL here.
 
 ```bash
-bash "$COMMON_SCRIPTS_DIR/git_commit_push.sh" \
-  --clone-dir "$CLONE_DIR" \
-  --files     "build/manifests-config.yaml" \
-  --message   "Add $COMPONENT_NAME to manifests-config.yaml" \
-  --branch    "$DEST_BRANCH"
+cd "$CLONE_DIR"
+git add build/manifests-config.yaml
+git status   # verify only the expected file is staged
+git commit -m "Add $COMPONENT_NAME to manifests-config.yaml"
+git push origin "$DEST_BRANCH"
 ```
 
-On exit 1: display stderr and stop with:
+If push fails with "shallow update not allowed":
+```bash
+git fetch --unshallow origin
+git push origin "$DEST_BRANCH"
 ```
-ERROR in Step 9 (Commit/Push): Could not commit or push changes. See details above. Aborting.
+
+On any other push failure, display stderr and stop with:
+```
+ERROR in Step 9 (Push): Could not push branch '$DEST_BRANCH' to origin. See details above.
 ```
 
 ---
 
-## Step 9: Raise PR (up to 3 attempts)
+## Step 10: Raise PR (up to 3 attempts)
 
 > **Reminder:** Both `--src-url` and `--dest-url` must be `"$ODH_OPERATOR_URL"`. Do NOT
 > replace either with the hardcoded upstream URL, even if `$ODH_OPERATOR_URL` resolves to
@@ -417,14 +469,14 @@ On failure:
 
 After 3 failures, stop with:
 ```
-ERROR in Step 9 (Raise PR): Could not create PR after 3 attempts. See errors above. Aborting.
+ERROR in Step 10 (Raise PR): Could not create PR after 3 attempts. See errors above. Aborting.
 ```
 
 After a successful PR creation, update Jira:
 ```bash
 uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py <jira-url> \
-  --add-label "operator-pr-raised" \
-  --comment "GitHub PR raised to add '$COMPONENT_NAME' to ${ODH_OPERATOR_PATH} manifests config.
+  --add-label "odh-operator-pr-raised" \
+  --comment "GitHub PR raised to add '$COMPONENT_NAME' to opendatahub-operator manifests config.
 
 PR URL: $PR_URL
 
@@ -434,7 +486,7 @@ File changed: build/manifests-config.yaml (map entry added for $COMPONENT_NAME).
 
 ---
 
-## Step 10: Report Completion
+## Step 11: Report Completion
 
 Print:
 ```
@@ -442,7 +494,7 @@ Done.
 
   build/manifests-config.yaml  — $COMPONENT_NAME entry added under map:
   GitHub PR                    — raised: $PR_URL
-  Jira                         — updated (label: operator-pr-raised)
+  Jira                         — updated (label: odh-operator-pr-raised)
 
   component_name               : $COMPONENT_NAME
   operator_manifest_src_path   : $OPERATOR_MANIFEST_SRC_PATH
@@ -467,7 +519,9 @@ Next step: review and merge the PR, then mark Step 9 complete in Jira.
 | `is_operator=false` | Step 4a | Expected — no operator changes needed; skill exits 0 |
 | Operator manifest fields missing | Step 4b | Add `operator_manifest_src_path` and `operator_manifest_dest_path` to YAML and re-upload |
 | Component already in manifests-config.yaml (main) | Step 5 | Expected — Jira updated; skill exits 0 cleanly |
-| `build/manifests-config.yaml` not found in clone | Step 7 | Check `ODH_OPERATOR_URL` points to the correct repo |
-| Clone or push fails | Step 6 | Check GITHUB_TOKEN push scope on `$ODH_OPERATOR_PATH` |
-| Shallow push rejected | Steps 6, 8 | `git fetch --unshallow origin && git push origin "$DEST_BRANCH"` |
-| PR creation fails 3× | Step 9 | Check GITHUB_TOKEN; verify branch was pushed; fix manually |
+| Existing open PR found | Step 6 | Expected — Jira updated; merge the existing PR |
+| PR already merged | Step 6 | Expected — skill exits 0 cleanly |
+| `build/manifests-config.yaml` not found in clone | Step 8 | Check `ODH_OPERATOR_URL` points to the correct repo |
+| Clone or push fails | Step 7 | Check GITHUB_TOKEN push scope on `$ODH_OPERATOR_PATH` |
+| Shallow push rejected | Steps 7, 9 | `git fetch --unshallow origin && git push origin "$DEST_BRANCH"` |
+| PR creation fails 3× | Step 10 | Check GITHUB_TOKEN; verify branch was pushed; fix manually |
