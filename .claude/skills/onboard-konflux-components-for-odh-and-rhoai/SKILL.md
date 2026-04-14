@@ -1,30 +1,21 @@
 ---
 name: onboard-konflux-components-for-odh-and-rhoai
-description: Master orchestrator skill for the full ODH/RHOAI component onboarding pipeline. Idempotent — run any number of times for the same Jira. Each run syncs PR/MR state, executes newly-unblocked steps, and posts a summary of what changed. Transitions Jira through In Progress → Review → Resolved automatically.
-allowed-tools: Bash
+description: Master orchestrator skill for the full ODH/RHOAI component onboarding pipeline. Takes a single Jira URL and coordinates 7 sub-skills in sequence with background PR/MR monitoring. Transitions Jira through In Progress -> Review -> Resolved automatically.
+allowed-tools: Bash, Read, Write, Edit
 user-invocable: true
 ---
 
 # Onboard Konflux Components for ODH and RHOAI
 
-Orchestrates the complete component onboarding pipeline (idempotent re-run model):
+Orchestrates the complete component onboarding pipeline:
 
 1. `validate-component-onboarding-jira` — fetch + validate Jira YAML
 2. `create-quay-repo` — GitLab MR to app-interface
-3. `create-rhoai-delivery-repo` — GitLab MR to pyxis-repo-configs **(RHOAI only; prerequisite of krd)**
-4. `onboard-component-to-konflux-release-data` — GitLab MR to konflux-release-data (after delivery-repo merges for RHOAI)
-5. `add-component-to-odh-konflux-central` **(ODH)** / `add-component-to-rhoai-konflux-central` + `create-pull-pipelines-in-rhoai-konflux-central` **(RHOAI)**
-6. `run-odh-konflux-onboarder-workflow` — triggered once krd+okc are both merged **(ODH only)**
-7. `integrate-component-with-odh-operator` — GitHub PR (if is_operator=true)
-8. `integrate-component-with-bundle` — GitHub PR to ODH-Build-Config
-9. `update-rhoai-product-listing` — GitLab MR, triggered after delivery-repo merges **(RHOAI only)**
-10. `setup-auto-merge` — GitHub PR to rhods-devops-infra **(RHOAI only)**
-11. `enable-renovate-on-rhoai-component-repo` + deferred `sync-rhoai-renovate-configs` **(RHOAI only)**
-
-**Re-run model:** invoke this skill any number of times for the same Jira URL.
-Each run checks Jira labels and PR/MR API status to determine what's already done,
-executes the next unblocked steps, and posts a summary of status changes only.
-No background nohup processes are used.
+3. `onboard-component-to-konflux-release-data` — GitLab MR to konflux-release-data
+4. `add-component-to-odh-konflux-central` — GitHub PR for Tekton pipelineruns
+5. `run-odh-konflux-onboarder-workflow` — GitHub Actions workflow (deferred, background)
+6. `integrate-component-with-odh-operator` — GitHub PR to opendatahub-operator (if operator)
+7. `integrate-component-with-bundle` — GitHub PR to ODH-Build-Config
 
 ## Usage
 
@@ -32,21 +23,23 @@ No background nohup processes are used.
 /onboard-konflux-components-for-odh-and-rhoai <jira-url>
 ```
 
+Example:
+```
+/onboard-konflux-components-for-odh-and-rhoai https://redhat.atlassian.net/browse/RHOAIENG-1234
+```
+
 ## Prerequisites
 
 **Jira:** `JIRA_USER_EMAIL`, `JIRA_API_TOKEN`
 **GitLab (VPN required):** `GITLAB_USER`, `GITLAB_TOKEN` (api + write_repository scope)
 **GitHub:** `GITHUB_USER`, `GITHUB_TOKEN` (repo + actions:write scope)
-**OpenShift:** `EXT_OC_TOKEN` (external cluster — stone-prd-rh01, ODH builds), `INT_OC_TOKEN` (internal cluster — stone-prod-p02, RHOAI builds) — each required only if no matching kubeconfig context is found for that cluster
+**OpenShift:** `OC_TOKEN` (if no matching kubeconfig context for Konflux cluster)
 **Tools:** `uv`, `git`, `oc`, `skopeo`, `yamllint`, `jq`, `kustomize` (or `kubectl`)
 
 Optional overrides: `APP_INTERFACE_REPO_URL`, `KONFLUX_RELEASE_DATA_REPO_URL`,
-`ODH_KONFLUX_CENTRAL_REPO_URL`, `ODH_OPERATOR_REPO_URL`, `OBC_REPO_URL`, `JIRA_SERVER`,
-`RHOAI_KONFLUX_CENTRAL_REPO_URL` (used by Steps 7/8 RHOAI; default: `https://github.com/red-hat-data-services/konflux-central.git`),
-`PYXIS_REPO_CONFIGS_REPO_URL` (used by Steps 9/10 RHOAI; default: `https://gitlab.cee.redhat.com/releng/pyxis-repo-configs.git`),
-`RHODS_DEVOPS_INFRA_REPO_URL` (used by Step 11 RHOAI; default: `https://github.com/red-hat-data-services/rhods-devops-infra.git`)
+`ODH_KONFLUX_CENTRAL_REPO_URL`, `ODH_OPERATOR_REPO_URL`, `OBC_REPO_URL`, `JIRA_SERVER`
 
-**VPN must be active** before running — required for Steps 3, 4, and 10 (GitLab on gitlab.cee.redhat.com).
+**VPN must be active** before running — required for Steps 2 and 3 (GitLab on gitlab.cee.redhat.com).
 
 ## Implementation
 
@@ -56,15 +49,72 @@ VALIDATE_SKILL_DIR is `<SKILL_DIR>/../validate-component-onboarding-jira`.
 
 ---
 
+## CRITICAL GLOBAL OVERRIDE RULE
+
+When following any child skill's SKILL.md, at every step that runs
+`monitor_github_pr.py` or `monitor_gitlab_mr.py` **without** `--check-only` (a
+blocking foreground call), you MUST instead:
+
+1. Record the PR/MR URL in `$WORKDIR/pipeline_state.json` (Write tool).
+2. Launch a background monitor using the Background Monitoring Pattern (see below).
+3. **Immediately return to the wrapper's main flow** — do NOT wait for merge.
+
+Child skill steps that poll for repo/component creation **after** a merge (e.g.,
+`create-quay-repo` Step 11, `onboard-component-to-konflux-release-data` Step 11)
+are **also skipped** — handled by `monitor_completion.sh`.
+
+---
+
+## Background Monitoring Pattern
+
+When the Critical Global Override Rule applies, replace the blocking monitor call with:
+
+```bash
+STEP_NAME="<quay|krd|okc|operator>"
+URL="<MR_or_PR_URL>"
+LOG_FILE="$WORKDIR/monitor_${STEP_NAME}.log"
+RESULT_FILE="$WORKDIR/monitor_${STEP_NAME}.result"
+PID_FILE="$WORKDIR/monitor_${STEP_NAME}.pid"
+
+# GitHub PR variant:
+nohup bash -c "
+  result=\$(uv run --script '$COMMON_SCRIPTS_DIR/monitor_github_pr.py' \
+    --pr-url '$URL' --timeout 120 2>>'$LOG_FILE')
+  echo \"\$result\" > '$RESULT_FILE'
+  echo \"\$result\" >> '$LOG_FILE'
+" >> "$LOG_FILE" 2>&1 &
+echo $! > "$PID_FILE"
+echo "[WRAPPER] Background monitor for $STEP_NAME started (PID=$(cat $PID_FILE))"
+
+# GitLab MR variant:
+nohup bash -c "
+  result=\$(GITLAB_SSL_VERIFY=false uv run --script '$COMMON_SCRIPTS_DIR/monitor_gitlab_mr.py' \
+    --mr-url '$URL' --timeout 120 2>>'$LOG_FILE')
+  echo \"\$result\" > '$RESULT_FILE'
+  echo \"\$result\" >> '$LOG_FILE'
+" >> "$LOG_FILE" 2>&1 &
+echo $! > "$PID_FILE"
+echo "[WRAPPER] Background monitor for $STEP_NAME started (PID=$(cat $PID_FILE))"
+```
+
+The `.result` file will contain a single line: `merged`, `closed`, `pipeline_failed`, or `timeout`.
+
+---
+
 ## Step 0: Parse Inputs
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/parse_jira_url.sh" "${1:-}")"
-[[ -z "$JIRA_URL" ]] && {
+JIRA_URL="${1:-}"
+if [[ -z "$JIRA_URL" ]]; then
   echo "ERROR: Jira URL is required."
   echo "  Usage: /onboard-konflux-components-for-odh-and-rhoai <jira-url>"
   exit 1
-}
+fi
+if [[ "$JIRA_URL" != *"/browse/"* ]]; then
+  echo "ERROR: Invalid Jira URL format. Expected: https://redhat.atlassian.net/browse/RHOAIENG-1234"
+  exit 1
+fi
+JIRA_ID="${JIRA_URL##*/}"
 echo "Jira ID  : $JIRA_ID"
 echo "Jira URL : $JIRA_URL"
 ```
@@ -73,11 +123,36 @@ echo "Jira URL : $JIRA_URL"
 
 ## Step 1: Check Prerequisites
 
-```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
-  --env "JIRA_USER_EMAIL JIRA_API_TOKEN GITLAB_USER GITLAB_TOKEN GITHUB_USER GITHUB_TOKEN" \
-  --tools "uv git oc skopeo yamllint jq kustomize"
+Check in order; stop with a remediation message on first failure.
 
+```bash
+[[ -z "${JIRA_USER_EMAIL:-}" ]] && echo "ERROR: JIRA_USER_EMAIL not set. export JIRA_USER_EMAIL=you@example.com" && exit 1
+[[ -z "${JIRA_API_TOKEN:-}" ]]  && echo "ERROR: JIRA_API_TOKEN not set." && exit 1
+[[ -z "${GITLAB_USER:-}" ]]     && echo "ERROR: GITLAB_USER not set. export GITLAB_USER=yourusername" && exit 1
+[[ -z "${GITLAB_TOKEN:-}" ]]    && echo "ERROR: GITLAB_TOKEN not set." && exit 1
+[[ -z "${GITHUB_USER:-}" ]]     && echo "ERROR: GITHUB_USER not set. export GITHUB_USER=yourusername" && exit 1
+[[ -z "${GITHUB_TOKEN:-}" ]]    && echo "ERROR: GITHUB_TOKEN not set." && exit 1
+
+for tool in uv git oc skopeo yamllint jq; do
+  command -v "$tool" &>/dev/null || {
+    echo "ERROR: '$tool' is not installed."
+    case "$tool" in
+      uv)       echo "  Install: curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
+      oc)       echo "  Install: https://console.redhat.com/openshift/downloads" ;;
+      skopeo)   echo "  Install: brew install skopeo  OR  sudo dnf install skopeo" ;;
+      yamllint) echo "  Install: pip install yamllint  OR  brew install yamllint" ;;
+      jq)       echo "  Install: brew install jq  OR  sudo dnf install jq" ;;
+    esac
+    exit 1
+  }
+done
+
+# kustomize (standalone binary or shim created by install.sh)
+if ! command -v kustomize &>/dev/null && [[ ! -x "${HOME}/.local/bin/kustomize" ]]; then
+  echo "ERROR: kustomize not found. Run install.sh or install kustomize manually:"
+  echo "  https://kubectl.docs.kubernetes.io/installation/kustomize/"
+  exit 1
+fi
 [[ -x "${HOME}/.local/bin/kustomize" ]] && export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
@@ -86,13 +161,43 @@ bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
 ## Step 2: Set Up Working Directory and Initialize State
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/init_pipeline.sh" --jira-url "$JIRA_URL")"
+WORKDIR="$(pwd)/${JIRA_ID}"
+mkdir -p "$WORKDIR"
 echo "Working directory: $WORKDIR"
-echo "Pipeline state: $PIPELINE_STATE"
+PIPELINE_STATE="$WORKDIR/pipeline_state.json"
 ```
 
-(Full `--product-context` and `--component-name` are passed after Step 4 parses the YAML;
-`init_pipeline.sh` handles both fresh creation and resumption of an existing state file.)
+**If `$PIPELINE_STATE` does not exist**, use the Write tool to create it with these exact
+contents (substituting `<JIRA_URL>` and `<JIRA_ID>` with their actual values):
+
+```json
+{
+  "jira_url": "<JIRA_URL>",
+  "jira_id": "<JIRA_ID>",
+  "component_name": "",
+  "product_context": "",
+  "quay_org": "",
+  "quay_visibility": "",
+  "quay_repo_uri": "",
+  "is_operator": false,
+  "steps": {
+    "validate":  { "status": "pending" },
+    "quay":      { "mr_url": "",  "status": "pending" },
+    "krd":       { "mr_url": "",  "status": "pending" },
+    "okc":       { "pr_url": "",  "status": "pending" },
+    "onboarder": { "run_id": "", "tekton_pr_url": "", "status": "pending" },
+    "operator":  { "pr_url": "",  "status": "pending" },
+    "bundle":    { "pr_url": "",  "status": "pending" }
+  }
+}
+```
+
+**If `$PIPELINE_STATE` already exists**, read it with the Read tool and print statuses:
+
+```bash
+echo "Resuming from existing state:"
+jq -r '.steps | to_entries[] | "  \(.key): \(.value.status)"' "$PIPELINE_STATE"
+```
 
 ---
 
@@ -100,464 +205,542 @@ echo "Pipeline state: $PIPELINE_STATE"
 
 **Skip if** `steps.validate.status == "done"` in `pipeline_state.json`.
 
-Follow the `validate-component-onboarding-jira` child skill's implementation exactly.
+Read `<VALIDATE_SKILL_DIR>/SKILL.md` with the Read tool. Follow its implementation exactly.
+No monitoring override applies to this skill (it has no PR/MR monitor step).
 
 On success:
 - `$WORKDIR/component_onboarding_details.json` and `$WORKDIR/component_onboarding_details.yaml` exist
 - Jira is in "In Progress" status
-- Update pipeline state:
-  ```bash
-  bash "$COMMON_SCRIPTS_DIR/pipeline_state.sh" set \
-    --state "$PIPELINE_STATE" --step validate --field status --value "done"
-  ```
+- Use the Write tool to update `pipeline_state.json`: set `steps.validate.status = "done"`.
 
-On failure: **hard blocker**. Display the child skill's error and stop.
+On failure: **hard blocker**. Display the child skill's error and stop. Do not continue.
 
 ---
 
 ## Step 4: Parse Component Details and Derive Computed Variables
 
-**Skip computation if** `component_name` is already non-empty in `pipeline_state.json`, but still read variables from the YAML into shell for use in later steps.
+**Skip if** `component_name` is already non-empty in `pipeline_state.json`.
 
+Read `$WORKDIR/component_onboarding_details.yaml` with the Read tool. Extract:
+
+| Variable | YAML field | Required |
+|----------|-----------|----------|
+| `COMPONENT_NAME` | `inputs.component_name` | Yes |
+| `IS_OPERATOR` | `inputs.is_operator` | Yes |
+| `REPO_URL` | `inputs.repo_url` | Yes |
+| `REPO_BRANCH` | `inputs.repo_branch` | Yes |
+
+**Derive `PRODUCT_CONTEXT`** in order:
+1. Jira key prefix: `RHOAIENG` → `RHOAI`; `RHODS` → `ODH`
+2. `fields.summary` in `component_onboarding_details.json`: contains "RHOAI" → `RHOAI`; "ODH" → `ODH`
+3. Fallback: ask the user interactively
+
+**Derive Quay variables:**
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/parse_component_details.sh" \
-  --workdir        "$WORKDIR" \
-  --jira-id        "$JIRA_ID" \
-  --scripts-dir    "$COMMON_SCRIPTS_DIR" \
-  --pipeline-state "$PIPELINE_STATE")"
-# Sets: COMPONENT_NAME IS_OPERATOR REPO_URL REPO_BRANCH
-#       PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI
+if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
+  QUAY_ORG="opendatahub"; QUAY_VISIBILITY="public"
+elif [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
+  QUAY_ORG="rhoai"; QUAY_VISIBILITY="private"
+fi
+QUAY_REPO_URI="quay.io/${QUAY_ORG}/${COMPONENT_NAME}"
 ```
 
-After parsing, update the state schema for any steps not yet in the file
-(handles old state files missing new steps):
+Use the Write tool to update `pipeline_state.json` with all derived values:
+`component_name`, `product_context`, `quay_org`, `quay_visibility`, `quay_repo_uri`, `is_operator`.
 
-```bash
-bash "$COMMON_SCRIPTS_DIR/init_pipeline.sh" \
-  --jira-url         "$JIRA_URL" \
-  --workdir-override "$WORKDIR" \
-  --product-context  "$PRODUCT_CONTEXT" \
-  --component-name   "$COMPONENT_NAME" \
-  --is-operator      "$IS_OPERATOR" \
-  > /dev/null
+Print:
 ```
-
-On exit 1: display stderr and stop with:
-```
-ERROR in Step 4 (Parse Component Details): Could not parse YAML or derive PRODUCT_CONTEXT. Aborting.
+Component : <COMPONENT_NAME>
+Product   : <PRODUCT_CONTEXT>
+Quay repo : <QUAY_REPO_URI> (<QUAY_VISIBILITY>)
+Operator  : <IS_OPERATOR>
 ```
 
 ---
 
-## Step 5: Sync State from Jira Labels
+## Step 5: Sub-skill — create-quay-repo
 
-Reconstruct `pipeline_state.json` from Jira labels (durable even after a fresh checkout)
-and extract any PR/MR URLs from Jira comments that aren't already in state:
+**Skip if** `steps.quay.status` is `"merged"` or `"skipped"`.
 
-```bash
-uv run --script "$COMMON_SCRIPTS_DIR/sync_state_from_jira.py" \
-  --jira-details   "$WORKDIR/component_onboarding_details.json" \
-  --pipeline-state "$PIPELINE_STATE"
-```
+Read `<SKILL_DIR>/../create-quay-repo/SKILL.md` with the Read tool.
 
-This is non-fatal. If it fails (e.g., JSON parse error), print a warning and continue.
+Pass these arguments to the skill's logic:
+- Quay repo (first positional arg): `$QUAY_REPO_URI` (e.g., `quay.io/opendatahub/my-component`)
+- `--jira-url $JIRA_URL`
+- `--visibility $QUAY_VISIBILITY`
+
+Follow the skill's implementation through to and including **Step 9** (Raise MR, up to 3 attempts).
+After `$MR_URL` is captured from the child skill:
+
+1. Update `pipeline_state.json`: `steps.quay.mr_url = "$MR_URL"`, `steps.quay.status = "mr_raised"`.
+2. Apply the Background Monitoring Pattern for step name `"quay"` (GitLab MR variant).
+3. **Skip Step 10** (inline MR monitor) and **Step 11** (Quay repo poll).
+4. Return to the wrapper.
+
+If the child skill exits because the Quay repo already exists (Step 3 of child):
+write `steps.quay.status = "merged"` and continue to Step 6.
 
 ---
 
-## Step 6: Check Current PR/MR Status
+## Step 6: Sub-skill — onboard-component-to-konflux-release-data
 
-For all steps in `pr_raised` or `mr_raised` state, query the GitHub/GitLab API
-(one call per step, `--check-only` mode) and update `pipeline_state.json`:
+**Skip if** `steps.krd.status` is `"merged"` or `"done"`.
 
+> **VPN must be active for this step.**
+
+Read `<SKILL_DIR>/../onboard-component-to-konflux-release-data/SKILL.md` with the Read tool.
+Follow its implementation with `$JIRA_URL` as the positional argument.
+
+Follow through to and including **Step 9** (Raise MR, up to 3 attempts).
+After `$MR_URL` is captured:
+
+1. Update `pipeline_state.json`: `steps.krd.mr_url = "$MR_URL"`, `steps.krd.status = "mr_raised"`.
+2. Apply the Background Monitoring Pattern for step name `"krd"` (GitLab MR variant).
+3. **Skip Step 10** (inline MR monitor) and **Step 11** (Component creation poll).
+4. Return to the wrapper.
+
+If the child skill exits because the Konflux Component already exists (Step 5 of child):
+write `steps.krd.status = "done"` and continue to Step 7.
+
+---
+
+## Step 7: Sub-skill — add-component-to-odh-konflux-central
+
+**Skip if** `steps.okc.status` is `"merged"`.
+
+Read `<SKILL_DIR>/../add-component-to-odh-konflux-central/SKILL.md` with the Read tool.
+Follow its implementation with `$JIRA_URL` as the positional argument.
+
+Follow through to and including the step that raises the GitHub PR and captures `$PR_URL`.
+After the PR is created:
+
+1. Update `pipeline_state.json`: `steps.okc.pr_url = "$PR_URL"`, `steps.okc.status = "pr_raised"`.
+2. Apply the Background Monitoring Pattern for step name `"okc"` (GitHub PR variant).
+3. Skip the inline blocking `monitor_github_pr.py` call in the child skill.
+4. Return to the wrapper.
+
+If the child skill exits because pipelineruns already exist: write
+`steps.okc.status = "merged"` and continue.
+
+---
+
+## Step 8: Sub-skill — integrate-component-with-odh-operator
+
+**Skip if** `steps.operator.status` is `"merged"` or `"skipped"`.
+
+Read `<SKILL_DIR>/../integrate-component-with-odh-operator/SKILL.md` with the Read tool.
+Follow its implementation with `$JIRA_URL` as the positional argument.
+
+- **If `IS_OPERATOR == false`:** The child skill exits cleanly at Step 4a. Write
+  `steps.operator.status = "skipped"` to `pipeline_state.json`. Continue to Step 9.
+
+- **If `IS_OPERATOR == true`:** Follow through to and including Step 9 (Raise PR, up to 3
+  attempts). After `$PR_URL` is captured:
+  1. Update `pipeline_state.json`: `steps.operator.pr_url = "$PR_URL"`, `steps.operator.status = "pr_raised"`.
+  2. Apply the Background Monitoring Pattern for step name `"operator"` (GitHub PR variant).
+  3. Skip Step 10 (inline PR monitor) and Step 11 (final Jira update).
+  4. Return to the wrapper.
+
+---
+
+## Step 9: Sub-skill — integrate-component-with-bundle
+
+**Skip if** `steps.bundle.status` is `"pr_raised"` or `"merged"`.
+
+Read `<SKILL_DIR>/../integrate-component-with-bundle/SKILL.md` with the Read tool.
+Follow its implementation with `$JIRA_URL` as the positional argument.
+
+This child skill exits after raising the PR (no inline monitoring). After `$PR_URL` is
+captured from the child skill's Step 10 (Raise PR):
+
+1. Update `pipeline_state.json`: `steps.bundle.pr_url = "$PR_URL"`, `steps.bundle.status = "pr_raised"`.
+2. No background monitor launch needed.
+3. Return to the wrapper.
+
+> **SHA256 placeholder warning:** The bundle PR contains a placeholder SHA256 digest in
+> `bundle/bundle-patch.yaml`. This **must** be replaced with the actual image digest from
+> the Konflux build **before the PR is merged**. The digest is only available after the
+> Tekton PR (Step 5) merges and a successful Konflux build completes.
+
+---
+
+## Step 10: Launch Deferred Workflow Trigger (Background)
+
+**Skip if** `steps.onboarder.status` is not `"pending"`.
+
+The `run-odh-konflux-onboarder-workflow` skill requires both the KRD MR (Step 3) and the
+OKC PR (Step 4) to be merged before the GitHub Actions workflow can succeed. A background
+script handles this dependency without blocking the wrapper.
+
+Derive workflow inputs:
 ```bash
-NEWLY_MERGED=$(bash "$COMMON_SCRIPTS_DIR/check_pr_mr_status.sh" \
-  --state      "$PIPELINE_STATE" \
-  --scripts-dir "$COMMON_SCRIPTS_DIR")
+REPO_NAME="${REPO_URL##*/}"; REPO_NAME="${REPO_NAME%.git}"
+BUILD_TYPE=$(grep 'build_type:' "$WORKDIR/component_onboarding_details.yaml" \
+  | awk '{print $2}' 2>/dev/null || echo "CI")
+[[ -z "$BUILD_TYPE" ]] && BUILD_TYPE="CI"
+OKC_URL="${ODH_KONFLUX_CENTRAL_REPO_URL:-https://github.com/opendatahub-io/odh-konflux-central.git}"
+OKC_PATH=$(echo "$OKC_URL" | sed 's|https://github.com/||;s|\.git$||')
+WORKFLOW_FILE=".github/workflows/odh-konflux-onboarder.yml"
 ```
 
-`NEWLY_MERGED` is a newline-separated list of step keys that transitioned to `"merged"`
-this run (e.g., `quay\nkrd`). Empty string means no changes.
-
-For each newly merged step, add its `label_done` Jira label so the state persists across runs:
+Use the Write tool to write `$WORKDIR/deferred_workflow.sh` with the following content.
+After writing, substitute all `PLACEHOLDER_*` tokens with the actual variable values using
+`sed` (see the sed block below the heredoc).
 
 ```bash
-for MERGED_KEY in $NEWLY_MERGED; do
-  DONE_LABEL=$(jq -r --arg k "$MERGED_KEY" '.steps[$k].label_done // ""' "$PIPELINE_STATE")
-  RAISED_LABEL=$(jq -r --arg k "$MERGED_KEY" '.steps[$k].label_raised // ""' "$PIPELINE_STATE")
-  LABEL_ARGS=""
-  [[ -n "$DONE_LABEL" ]]   && LABEL_ARGS="$LABEL_ARGS --add-label $DONE_LABEL"
-  [[ -n "$RAISED_LABEL" ]] && LABEL_ARGS="$LABEL_ARGS --remove-label $RAISED_LABEL"
-  if [[ -n "$LABEL_ARGS" ]]; then
+#!/usr/bin/env bash
+# deferred_workflow.sh — waits for KRD MR + OKC PR to merge, then triggers
+# the odh-konflux-onboarder workflow and monitors the Tekton PR to merge.
+# Generated by onboard-konflux-components-for-odh-and-rhoai.
+set -euo pipefail
+
+WORKDIR="PLACEHOLDER_WORKDIR"
+JIRA_URL="PLACEHOLDER_JIRA_URL"
+COMMON_SCRIPTS_DIR="PLACEHOLDER_COMMON_SCRIPTS_DIR"
+OKC_URL="PLACEHOLDER_OKC_URL"
+OKC_PATH="PLACEHOLDER_OKC_PATH"
+WORKFLOW_FILE="PLACEHOLDER_WORKFLOW_FILE"
+REPO_NAME="PLACEHOLDER_REPO_NAME"
+REPO_BRANCH="PLACEHOLDER_REPO_BRANCH"
+BUILD_TYPE="PLACEHOLDER_BUILD_TYPE"
+PIPELINE_STATE="$WORKDIR/pipeline_state.json"
+
+log() { echo "[deferred $(date '+%H:%M:%S')] $*" >> "$WORKDIR/deferred_workflow.log"; }
+log "Started. Waiting for KRD MR and OKC PR to merge."
+
+wait_for_merge() {
+  local label="$1" result_file="$WORKDIR/monitor_${1}.result"
+  local max_minutes=180 elapsed=0
+  while true; do
+    if [[ -f "$result_file" ]]; then
+      local r; r=$(cat "$result_file" | tr -d '[:space:]')
+      [[ "$r" == "merged" ]] && { log "$label: merged."; return 0; }
+      if [[ "$r" == "closed" || "$r" == "pipeline_failed" || "$r" == "timeout" ]]; then
+        log "ERROR: $label finished with '$r'. Cannot proceed."
+        return 1
+      fi
+    fi
+    [[ $elapsed -ge $max_minutes ]] && { log "ERROR: Timed out waiting for $label after ${max_minutes}m."; return 1; }
+    sleep 300
+    elapsed=$(( elapsed + 5 ))
+  done
+}
+
+wait_for_merge "krd" || {
+  uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --comment "Deferred workflow aborted: KRD MR did not merge successfully.
+Check \$WORKDIR/monitor_krd.result and re-trigger the workflow manually." 2>/dev/null || true
+  exit 1
+}
+
+wait_for_merge "okc" || {
+  uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --comment "Deferred workflow aborted: OKC PR did not merge successfully.
+Check \$WORKDIR/monitor_okc.result and re-trigger the workflow manually." 2>/dev/null || true
+  exit 1
+}
+
+log "Both KRD and OKC merged. Triggering odh-konflux-onboarder workflow..."
+
+RUN_ID=$(uv run --script "$COMMON_SCRIPTS_DIR/run_github_workflow.py" trigger \
+  --repo-url "$OKC_URL" \
+  --workflow "$WORKFLOW_FILE" \
+  --ref main \
+  --input "component=${REPO_NAME}" \
+  --input "pr_target_branch=${REPO_BRANCH}" \
+  --input "build_type=${BUILD_TYPE}") || {
+  log "ERROR: Workflow dispatch failed. Check GITHUB_TOKEN actions:write scope."
+  exit 1
+}
+log "Workflow triggered. Run ID: $RUN_ID"
+
+jq --arg rid "$RUN_ID" \
+  '.steps.onboarder.run_id = $rid | .steps.onboarder.status = "workflow_running"' \
+  "$PIPELINE_STATE" > "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+
+uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+  --comment "odh-konflux-onboarder workflow triggered.
+
+Component: $REPO_NAME | Branch: $REPO_BRANCH | Build type: $BUILD_TYPE
+Workflow run: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}" 2>/dev/null || true
+
+# Monitor workflow run (30 minute timeout)
+MONITOR_RESULT=$(uv run --script "$COMMON_SCRIPTS_DIR/run_github_workflow.py" monitor \
+  --repo-url "$OKC_URL" --run-id "$RUN_ID" --timeout 30) || true
+WORKFLOW_STATUS="${MONITOR_RESULT#status=}"
+log "Workflow status: $WORKFLOW_STATUS"
+
+if [[ "$WORKFLOW_STATUS" != "success" ]]; then
+  log "ERROR: Workflow run $RUN_ID finished with: $WORKFLOW_STATUS"
+  jq '.steps.onboarder.status = "failed"' "$PIPELINE_STATE" > \
+    "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+  uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --comment "odh-konflux-onboarder workflow FAILED (${WORKFLOW_STATUS}).
+Run URL: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
+Manual intervention required." 2>/dev/null || true
+  exit 1
+fi
+
+# Extract Tekton PR URL from workflow logs
+STEP_LOGS=$(uv run --script "$COMMON_SCRIPTS_DIR/run_github_workflow.py" get-step-logs \
+  --repo-url "$OKC_URL" --run-id "$RUN_ID" --step "Create pull request" 2>/dev/null || true)
+TEKTON_PR=$(echo "$STEP_LOGS" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | head -1 || true)
+log "Tekton PR: ${TEKTON_PR:-<not found in logs>}"
+
+jq --arg tpr "${TEKTON_PR:-}" \
+  '.steps.onboarder.tekton_pr_url = $tpr | .steps.onboarder.status = "tekton_pr_raised"' \
+  "$PIPELINE_STATE" > "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+
+uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+  --add-label "tekton-pr-raised" \
+  --comment "odh-konflux-onboarder workflow completed successfully.
+
+Tekton PR: ${TEKTON_PR:-<check workflow run logs>}
+Workflow run: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
+
+Monitoring Tekton PR for merge..." 2>/dev/null || true
+
+# Monitor Tekton PR (60 minute timeout)
+if [[ -n "$TEKTON_PR" ]]; then
+  log "Monitoring Tekton PR: $TEKTON_PR"
+  TEKTON_RESULT=$(uv run --script "$COMMON_SCRIPTS_DIR/monitor_github_pr.py" \
+    --pr-url "$TEKTON_PR" --timeout 60 2>>"$WORKDIR/deferred_workflow.log") || true
+
+  if [[ "$TEKTON_RESULT" == "merged" ]]; then
+    jq '.steps.onboarder.status = "merged"' "$PIPELINE_STATE" > \
+      "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
     uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-      $LABEL_ARGS || true
+      --add-label "tekton-pr-merged" \
+      --comment "Tekton PR merged: $TEKTON_PR
+
+Step 5 (Run CI/Nightly Build) is complete." 2>/dev/null || true
+    log "Tekton PR merged. Step 5 complete."
+  else
+    jq '.steps.onboarder.status = "failed"' "$PIPELINE_STATE" > \
+      "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+    log "ERROR: Tekton PR result: $TEKTON_RESULT. Check: $TEKTON_PR"
   fi
+fi
+log "Deferred workflow script complete."
+```
+
+After writing the file with the Write tool, perform substitution and launch:
+
+```bash
+sed -i'' \
+  -e "s|PLACEHOLDER_WORKDIR|$WORKDIR|g" \
+  -e "s|PLACEHOLDER_JIRA_URL|$JIRA_URL|g" \
+  -e "s|PLACEHOLDER_COMMON_SCRIPTS_DIR|$COMMON_SCRIPTS_DIR|g" \
+  -e "s|PLACEHOLDER_OKC_URL|$OKC_URL|g" \
+  -e "s|PLACEHOLDER_OKC_PATH|$OKC_PATH|g" \
+  -e "s|PLACEHOLDER_WORKFLOW_FILE|$WORKFLOW_FILE|g" \
+  -e "s|PLACEHOLDER_REPO_NAME|$REPO_NAME|g" \
+  -e "s|PLACEHOLDER_REPO_BRANCH|$REPO_BRANCH|g" \
+  -e "s|PLACEHOLDER_BUILD_TYPE|$BUILD_TYPE|g" \
+  "$WORKDIR/deferred_workflow.sh"
+chmod +x "$WORKDIR/deferred_workflow.sh"
+
+nohup bash "$WORKDIR/deferred_workflow.sh" >> "$WORKDIR/deferred_workflow.log" 2>&1 &
+echo $! > "$WORKDIR/deferred_workflow.pid"
+echo "[WRAPPER] Deferred workflow trigger started (PID=$(cat $WORKDIR/deferred_workflow.pid))"
+echo "[WRAPPER] Log: $WORKDIR/deferred_workflow.log"
+
+jq '.steps.onboarder.status = "pending_krd_okc_merge"' "$PIPELINE_STATE" > \
+  "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+```
+
+---
+
+## Step 11: Transition Jira to "Review"
+
+Read `pipeline_state.json` with the Read tool. Build a summary of all raised PR/MR URLs.
+
+```bash
+QUAY_MR=$(jq -r '.steps.quay.mr_url // "N/A"'             "$PIPELINE_STATE")
+KRD_MR=$(jq  -r '.steps.krd.mr_url // "N/A"'              "$PIPELINE_STATE")
+OKC_PR=$(jq  -r '.steps.okc.pr_url // "N/A"'              "$PIPELINE_STATE")
+OP_PR=$(jq   -r '.steps.operator.pr_url // "N/A"'         "$PIPELINE_STATE")
+BDLPR=$(jq   -r '.steps.bundle.pr_url // "N/A"'           "$PIPELINE_STATE")
+IS_OP=$(jq   -r '.is_operator'                            "$PIPELINE_STATE")
+
+uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+  --add-label "onboarding-in-review" \
+  --status "Review" \
+  --comment "All PRs and MRs raised for '$COMPONENT_NAME' onboarding. Pending review and merge.
+
+  Step 2 — Quay MR     : $QUAY_MR
+  Step 3 — KRD MR      : $KRD_MR
+  Step 4 — OKC PR      : $OKC_PR
+  Step 5 — Tekton PR   : auto-triggered once Steps 3+4 are merged (background script running)
+  Step 6 — Operator PR : $([ "$IS_OP" = "true" ] && echo "$OP_PR" || echo "N/A (is_operator=false)")
+  Step 7 — Bundle PR   : $BDLPR
+
+Background monitors are running. Jira will be moved to Resolved automatically when
+all PRs/MRs are merged.
+
+WARNING: Bundle PR requires the SHA256 image digest to be updated before merging."
+```
+
+---
+
+## Step 12: Launch Final Completion Monitor (Background)
+
+Use the Write tool to write `$WORKDIR/monitor_completion.sh` with the content below.
+After writing, substitute `PLACEHOLDER_*` values using `sed`, then launch.
+
+```bash
+#!/usr/bin/env bash
+# monitor_completion.sh — polls pipeline_state.json until all steps are done,
+# then transitions the Jira issue to Resolved.
+# Generated by onboard-konflux-components-for-odh-and-rhoai.
+set -euo pipefail
+
+WORKDIR="PLACEHOLDER_WORKDIR"
+JIRA_URL="PLACEHOLDER_JIRA_URL"
+COMMON_SCRIPTS_DIR="PLACEHOLDER_COMMON_SCRIPTS_DIR"
+PIPELINE_STATE="$WORKDIR/pipeline_state.json"
+MAX_WAIT=14400    # 4 hours
+POLL_INTERVAL=300 # 5 minutes
+ELAPSED=0
+
+log() { echo "[completion $(date '+%H:%M:%S')] $*" >> "$WORKDIR/monitor_completion.log"; }
+log "Started. Max wait: ${MAX_WAIT}s, poll: ${POLL_INTERVAL}s."
+
+sync_results() {
+  for step in quay krd okc operator; do
+    local rf="$WORKDIR/monitor_${step}.result"
+    [[ -f "$rf" ]] || continue
+    local cur; cur=$(jq -r ".steps.${step}.status" "$PIPELINE_STATE")
+    [[ "$cur" == "merged" || "$cur" == "skipped" || "$cur" == "done" ]] && continue
+    local r; r=$(cat "$rf" | tr -d '[:space:]')
+    if [[ "$r" == "merged" ]]; then
+      jq --arg s "$step" '.steps[$s].status = "merged"' "$PIPELINE_STATE" > \
+        "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+      log "Step $step: updated to merged."
+    fi
+  done
+}
+
+all_done() {
+  local v q k o on op b
+  v=$(jq -r  '.steps.validate.status'  "$PIPELINE_STATE")
+  q=$(jq -r  '.steps.quay.status'      "$PIPELINE_STATE")
+  k=$(jq -r  '.steps.krd.status'       "$PIPELINE_STATE")
+  o=$(jq -r  '.steps.okc.status'       "$PIPELINE_STATE")
+  on=$(jq -r '.steps.onboarder.status' "$PIPELINE_STATE")
+  op=$(jq -r '.steps.operator.status'  "$PIPELINE_STATE")
+  b=$(jq -r  '.steps.bundle.status'    "$PIPELINE_STATE")
+  log "Status: validate=$v quay=$q krd=$k okc=$o onboarder=$on operator=$op bundle=$b"
+  [[ "$v"  == "done"   ]] || return 1
+  [[ "$q"  == "merged" || "$q"  == "skipped" || "$q"  == "done" ]] || return 1
+  [[ "$k"  == "merged" || "$k"  == "done"    ]] || return 1
+  [[ "$o"  == "merged" ]] || return 1
+  [[ "$on" == "merged" || "$on" == "skipped" ]] || return 1
+  [[ "$op" == "merged" || "$op" == "skipped" ]] || return 1
+  # bundle: pr_raised is acceptable (SHA placeholder must be manually fixed before merge)
+  [[ "$b"  == "merged" || "$b"  == "pr_raised" ]] || return 1
+  return 0
+}
+
+while true; do
+  sync_results
+  if all_done; then
+    log "All steps complete. Transitioning Jira to Resolved."
+    COMP=$(jq -r  '.component_name'                          "$PIPELINE_STATE")
+    Q_MR=$(jq -r  '.steps.quay.mr_url // "N/A"'             "$PIPELINE_STATE")
+    K_MR=$(jq -r  '.steps.krd.mr_url // "N/A"'              "$PIPELINE_STATE")
+    O_PR=$(jq -r  '.steps.okc.pr_url // "N/A"'              "$PIPELINE_STATE")
+    T_PR=$(jq -r  '.steps.onboarder.tekton_pr_url // "N/A"' "$PIPELINE_STATE")
+    OP_PR=$(jq -r '.steps.operator.pr_url // "N/A"'         "$PIPELINE_STATE")
+    B_PR=$(jq -r  '.steps.bundle.pr_url // "N/A"'           "$PIPELINE_STATE")
+
+    uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+      --remove-label "onboarding-in-review" \
+      --add-label    "onboarding-complete" \
+      --status       "Resolved" \
+      --comment "ODH/RHOAI component onboarding for '$COMP' is COMPLETE.
+
+All PRs and MRs merged:
+  Step 2 — Quay MR     : $Q_MR
+  Step 3 — KRD MR      : $K_MR
+  Step 4 — OKC PR      : $O_PR
+  Step 5 — Tekton PR   : $T_PR
+  Step 6 — Operator PR : $OP_PR
+  Step 7 — Bundle PR   : $B_PR
+
+WARNING: If Bundle PR is still open, replace the SHA256 placeholder in
+bundle/bundle-patch.yaml with the actual Konflux image digest before merging." \
+      2>/dev/null || true
+
+    jq '.all_done = true' "$PIPELINE_STATE" > "$PIPELINE_STATE.tmp" && \
+      mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
+    log "Jira moved to Resolved. Onboarding complete."
+    exit 0
+  fi
+
+  if [[ $ELAPSED -ge $MAX_WAIT ]]; then
+    log "WARNING: Timed out after ${MAX_WAIT}s. Not all steps are done."
+    log "Check pipeline_state.json and individual .result files."
+    exit 1
+  fi
+  log "Not all done. Sleeping ${POLL_INTERVAL}s. (elapsed=${ELAPSED}s)"
+  sleep $POLL_INTERVAL
+  ELAPSED=$(( ELAPSED + POLL_INTERVAL ))
 done
 ```
 
----
-
-## Step 7: Compute Unblocked Steps
-
-A step is **executable** this run if:
-1. Its `status` is `"pending"` (not `pr_raised`, `mr_raised`, `merged`, `done`, `skipped`, `closed`)
-2. All steps in its `depends_on` list have `status == "merged"` or `"done"`
-
-Compute `UNBLOCKED_STEPS` by reading `pipeline_state.json`:
+After writing, substitute and launch:
 
 ```bash
-UNBLOCKED_STEPS=$(jq -r '
-  .steps as $steps |
-  $steps | to_entries[] |
-  select(.value.status == "pending") |
-  select(
-    .value.depends_on | all(. as $dep |
-      $steps[$dep].status == "merged" or $steps[$dep].status == "done"
-    )
-  ) | .key
-' "$PIPELINE_STATE")
+sed -i'' \
+  -e "s|PLACEHOLDER_WORKDIR|$WORKDIR|g" \
+  -e "s|PLACEHOLDER_JIRA_URL|$JIRA_URL|g" \
+  -e "s|PLACEHOLDER_COMMON_SCRIPTS_DIR|$COMMON_SCRIPTS_DIR|g" \
+  "$WORKDIR/monitor_completion.sh"
+chmod +x "$WORKDIR/monitor_completion.sh"
+
+nohup bash "$WORKDIR/monitor_completion.sh" >> "$WORKDIR/monitor_completion.log" 2>&1 &
+echo $! > "$WORKDIR/monitor_completion.pid"
+echo "[WRAPPER] Completion monitor started (PID=$(cat $WORKDIR/monitor_completion.pid))"
+echo "[WRAPPER] Log: $WORKDIR/monitor_completion.log"
 ```
 
 ---
 
-## Step 8: Execute Pending Unblocked Steps
+## Step 13: Print Final Summary
 
-For each step in `UNBLOCKED_STEPS`, follow the corresponding child skill's implementation
-through to and including the PR/MR creation step only (do NOT call any blocking monitor).
-After the PR/MR URL is captured, record it in `pipeline_state.json` and add the `label_raised`
-label to Jira.
-
-**General pattern for each child skill invocation:**
-
-```bash
-# 1. If pr_url/mr_url already set in pipeline_state.json, step is already "pr_raised" — skip
-URL_FIELD=$(jq -r ".steps.${STEP_KEY}.pr_url // .steps.${STEP_KEY}.mr_url // \"\"" "$PIPELINE_STATE")
-if [[ -n "$URL_FIELD" ]]; then
-  echo "[orchestrator] $STEP_KEY already has URL $URL_FIELD — skipping PR raise"
-  continue
-fi
-
-# 2. Invoke child skill's implementation (raises PR, captures URL)
-# 3. Record result:
-TMP=$(mktemp); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-jq --arg k "$STEP_KEY" --arg u "$PR_URL" --arg s "pr_raised" --arg ts "$NOW" \
-  '.steps[$k].pr_url = $u | .steps[$k].status = $s | .last_status_change_at = $ts' \
-  "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
-
-# 4. Add label_raised to Jira
-LABEL_RAISED=$(jq -r ".steps.${STEP_KEY}.label_raised // \"\"" "$PIPELINE_STATE")
-[[ -n "$LABEL_RAISED" ]] && uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" \
-  "$JIRA_URL" --add-label "$LABEL_RAISED" || true
-```
-
-### Step 8a: create-quay-repo (step key: `quay`)
-
-**Execute if** `quay` is in `UNBLOCKED_STEPS`.
-
-Follow `create-quay-repo` through **Step 9** (Raise MR). Capture `$MR_URL`.
-Record in `pipeline_state.json`: `steps.quay.mr_url = "$MR_URL"`, `status = "mr_raised"`.
-Add label `quay-mr-raised` to Jira.
-
-If child exits because Quay repo already exists (Step 3 of child):
-set `steps.quay.status = "done"` and add label `quay-mr-merged`.
-
-**Pass `--existing-mr-url`** if `steps.quay.mr_url` is already set — child will skip straight to returning the URL.
-
-### Step 8b: create-rhoai-delivery-repo (step key: `delivery_repo`, RHOAI only)
-
-**Execute if** `delivery_repo` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-> **VPN must be active. Runs before `krd` — for RHOAI, `krd` has `depends_on: ["delivery_repo"]`,
-> so this MR must merge before `krd` is unblocked.**
-
-Follow `create-rhoai-delivery-repo` through **Step 10** (Raise MR). Capture `$MR_URL`.
-Record: `steps.delivery_repo.mr_url = "$MR_URL"`, `status = "mr_raised"`. Add label `delivery-repo-mr-raised`.
-
-If delivery repo already exists (child Step 5 exits 0): set `status = "done"`, add label `delivery-repo-exists`.
-
-When this MR merges, Step 6 (`check_pr_mr_status.sh`) transitions `delivery_repo` to `"merged"` and
-adds label `delivery-repo-mr-merged`. Step 7 then unblocks `krd` on the next re-run.
-
-### Step 8c: onboard-component-to-konflux-release-data (step key: `krd`)
-
-**Execute if** `krd` is in `UNBLOCKED_STEPS`.
-
-> **VPN must be active.**
-> **For RHOAI:** the `depends_on: ["delivery_repo"]` check in Step 7 ensures the delivery-repo MR is
-> merged before this step is unblocked. For ODH there is no such dependency.
-
-Follow `onboard-component-to-konflux-release-data` through **Step 9** (Raise MR). Capture `$MR_URL`.
-Record: `steps.krd.mr_url = "$MR_URL"`, `status = "mr_raised"`.
-Add label `krd-mr-raised` to Jira.
-
-If child exits because component already exists: set `status = "done"`, add label `krd-mr-merged`.
-
-### Step 8d: add-component-to-*-konflux-central (step key: `okc`)
-
-**Execute if** `okc` is in `UNBLOCKED_STEPS`.
-
-**If `PRODUCT_CONTEXT == "ODH"`:** follow `add-component-to-odh-konflux-central` through PR raise.
-Record: `steps.okc.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `okc-pr-raised`.
-
-**If `PRODUCT_CONTEXT == "RHOAI"`:** follow `add-component-to-rhoai-konflux-central` through
-**Step 10** (Raise PR). The child derives `$BRANCH_NAME` from `target_rhoai_version` in Step 3f —
-allow this derivation to proceed.
-Record: `steps.okc.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `rkc-pr-raised`.
-
-If child exits because PipelineRun already exists: set `status = "done"`.
-
-### Step 8e: create-pull-pipelines-in-rhoai-konflux-central (step key: `pull_pipelines`, RHOAI only)
-
-**Execute if** `pull_pipelines` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-Follow `create-pull-pipelines-in-rhoai-konflux-central` through **Step 10** (Raise PR). Capture `$PULL_PR_URL`.
-Record: `steps.pull_pipelines.pr_url = "$PULL_PR_URL"`, `status = "pr_raised"`. Add label `rkc-pull-pr-raised`.
-
-If PipelineRun already exists: set `status = "done"`.
-
-### Step 8f: integrate-component-with-odh-operator (step key: `operator`)
-
-**Execute if** `operator` is in `UNBLOCKED_STEPS`.
-
-> **CRITICAL**: The operator repo URL **must** be resolved by `resolve_operator_url.sh`
-> in the child skill's Step 3d. If `ODH_OPERATOR_REPO_URL` is set in the environment,
-> the script will use it as an override. **Never hardcode** `ODH_OPERATOR_URL` — always
-> let the script resolve it.
-
-If `IS_OPERATOR == false`: child exits at Step 4a — set `status = "skipped"`.
-
-If `IS_OPERATOR == true`: follow through to Step 9 (Raise PR). Capture `$PR_URL`.
-Record: `steps.operator.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `operator-pr-raised`.
-
-**Pass `--existing-pr-url`** if `steps.operator.pr_url` is already set — child will skip straight to returning the URL.
-
-### Step 8g: integrate-component-with-bundle (step key: `bundle`)
-
-**Execute if** `bundle` is in `UNBLOCKED_STEPS`.
-
-Follow `integrate-component-with-bundle` through **Step 10** (Raise PR). Capture `$PR_URL`.
-Record: `steps.bundle.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `bundle-pr-raised`.
-
-### Step 8h: update-rhoai-product-listing (step key: `product_listing`, RHOAI only)
-
-**Execute if** `product_listing` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-> **VPN must be active. Only runs after `delivery_repo` status == "merged" or "done".**
-
-Follow `update-rhoai-product-listing` through the MR raise step. Capture `$MR_URL`.
-Record: `steps.product_listing.mr_url = "$MR_URL"`, `status = "mr_raised"`. Add label `product-listing-mr-raised`.
-
-If entry already exists: set `status = "done"`, add label `product-listing-exists`.
-
-### Step 8i: setup-auto-merge (step key: `auto_merge`, RHOAI only)
-
-**Execute if** `auto_merge` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-Follow `setup-auto-merge` through **Step 9** (Raise PR). Capture `$PR_URL`.
-Record: `steps.auto_merge.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `auto-merge-pr-raised`.
-
-If entries already exist: set `status = "done"`.
-
-### Step 8j: enable-renovate-on-rhoai-component-repo (step key: `renovate`, RHOAI only)
-
-**Execute if** `renovate` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-Follow `enable-renovate-on-rhoai-component-repo` through **Step 9** (Raise PR). Capture `$PR_URL`.
-Record: `steps.renovate.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `renovate-pr-raised`.
-
-If entry already exists: set `status = "done"`.
-
----
-
-## Step 9: Handle Workflow Triggers
-
-Workflow triggers execute once their dependencies are merged. `onboarder_workflow`
-produces a Tekton PR URL that must be tracked (record as `pr_raised`); `renovate_sync`
-completes with no URL and is marked `done` immediately.
-
-### Step 9a: run-odh-konflux-onboarder-workflow (step key: `onboarder_workflow`, ODH only)
-
-**Execute if** `onboarder_workflow` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "ODH"`.
-
-The `depends_on: ["krd", "okc"]` check in Step 7 ensures both are merged before this runs.
-
-Follow `run-odh-konflux-onboarder-workflow` through **Step 9** (Update Jira with PR URL).
-Capture `$TEKTON_PR_URL` from Step 8. On success:
-```bash
-TMP=$(mktemp); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-jq --arg u "$TEKTON_PR_URL" --arg s "pr_raised" --arg ts "$NOW" \
-  '.steps.onboarder_workflow.pr_url = $u | .steps.onboarder_workflow.status = $s | .last_status_change_at = $ts' \
-  "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
-NEW_PRS_RAISED="true"
-uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-  --add-label "tekton-pr-raised" || true
-```
-
-(`check_pr_mr_status.sh` in Step 6 will detect the merge on the next re-run and
-advance the status. The `tekton-pr-merged` label will be added when merged.)
-
-### Step 9b: sync-rhoai-renovate-configs (step key: `renovate_sync`, RHOAI only)
-
-**Execute if** `renovate_sync` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
-
-The `depends_on: ["renovate"]` check in Step 7 ensures renovate PR is merged before this runs.
-
-```bash
-RKC_URL="${RHOAI_KONFLUX_CENTRAL_REPO_URL:-https://github.com/red-hat-data-services/konflux-central.git}"
-```
-
-Follow `sync-rhoai-renovate-configs` completely. On success, store the
-workflow `run_url` in pipeline state (the `RUN_ID` and `RKC_PATH` variables
-are set by the sync skill):
-```bash
-RUN_URL="https://github.com/${RKC_PATH}/actions/runs/${RUN_ID}"
-TMP=$(mktemp); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-jq --arg ts "$NOW" --arg url "$RUN_URL" \
-  '.steps.renovate_sync.status = "done" | .steps.renovate_sync.run_url = $url | .last_status_change_at = $ts' \
-  "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
-uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-  --add-label "renovate-sync-triggered" || true
-```
-
----
-
-## Step 10: Check Idle Reminder
-
-If any steps are still in `pr_raised` or `mr_raised` status AND `last_status_change_at`
-is set AND the gap exceeds 2 days, tag the assignee with a reminder:
-
-```bash
-LAST_CHANGE=$(jq -r '.last_status_change_at // ""' "$PIPELINE_STATE")
-IDLE_DAYS=0
-if [[ -n "$LAST_CHANGE" ]]; then
-  EPOCH_NOW=$(date +%s)
-  # macOS-compatible date parsing
-  EPOCH_LAST=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$LAST_CHANGE" +%s 2>/dev/null \
-    || date -d "$LAST_CHANGE" +%s 2>/dev/null || echo "$EPOCH_NOW")
-  IDLE_DAYS=$(( (EPOCH_NOW - EPOCH_LAST) / 86400 ))
-fi
-
-HAS_OPEN=$(jq -r '[.steps | to_entries[] | select(.value.status == "pr_raised" or .value.status == "mr_raised")] | length' "$PIPELINE_STATE")
-ASSIGNEE=$(jq -r '.fields.assignee.accountId // ""' "$WORKDIR/component_onboarding_details.json" 2>/dev/null || true)
-
-POST_IDLE_REMINDER="false"
-if [[ "$HAS_OPEN" -gt 0 && "$IDLE_DAYS" -ge 2 && -n "$ASSIGNEE" ]]; then
-  POST_IDLE_REMINDER="true"
-fi
-```
-
----
-
-## Step 11: Post Pending PRs/MRs Summary to Jira
-
-**Only post a comment if something changed this run** (i.e., `NEWLY_MERGED` is non-empty OR
-at least one new PR/MR was raised in Step 8). If nothing changed, skip this step entirely —
-do not post any comment.
-
-When posting, include only the PRs/MRs that are **still pending** (status `pr_raised` or
-`mr_raised`), not the full pipeline table. Tag the assignee if present.
-
-```bash
-# Determine whether anything changed this run
-SOMETHING_CHANGED="false"
-[[ -n "$NEWLY_MERGED" ]] && SOMETHING_CHANGED="true"
-# NEW_PRS_RAISED is set to "true" during Step 8 whenever a new PR/MR URL is recorded
-[[ "${NEW_PRS_RAISED:-false}" == "true" ]] && SOMETHING_CHANGED="true"
-
-if [[ "$SOMETHING_CHANGED" == "true" ]]; then
-  PENDING_COMMENT=$(uv run --script "$COMMON_SCRIPTS_DIR/build_progress_summary.py" \
-    --state           "$PIPELINE_STATE" \
-    --component-name  "$COMPONENT_NAME" \
-    --product-context "$PRODUCT_CONTEXT" \
-    --mode            "pending-only" \
-    ${ASSIGNEE:+--assignee "$ASSIGNEE"})
-
-  if [[ -n "$PENDING_COMMENT" ]]; then
-    uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-      --comment "$PENDING_COMMENT" || true
-  fi
-fi
-```
-
-Set `NEW_PRS_RAISED="true"` in Step 8 immediately after recording any new PR/MR URL into
-`pipeline_state.json` so this step can detect it.
-
----
-
-## Step 12: Resolve or Keep in Review
-
-**Check if all applicable steps are done:**
-
-```bash
-ALL_DONE=$(jq -r '
-  [.steps | to_entries[] | select(.value.status != "skipped")] |
-  all(.value.status == "done" or .value.status == "merged")
-' "$PIPELINE_STATE")
-```
-
-**If `ALL_DONE == "true"`:**
-
-Post the full table summary as the final comment, then resolve:
-
-```bash
-FULL_COMMENT=$(uv run --script "$COMMON_SCRIPTS_DIR/build_progress_summary.py" \
-  --state           "$PIPELINE_STATE" \
-  --component-name  "$COMPONENT_NAME" \
-  --product-context "$PRODUCT_CONTEXT" \
-  --mode            "full")
-
-uv run --script "$COMMON_SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-  --comment   "$FULL_COMMENT" \
-  --add-label "component-onboarding-completed" \
-  --status    "Resolved"
-
-echo "[orchestrator] All steps complete — Jira resolved with component-onboarding-completed label."
-```
-
-Do not tag the assignee on the resolution comment.
-
-**If `ALL_DONE == "false"` and any PRs/MRs are pending:**
-
-Transition Jira to "Review" (idempotent — safe to call if already in Review):
-
-```bash
-bash "$COMMON_SCRIPTS_DIR/raise_jira_review.sh" \
-  --workdir         "$WORKDIR" \
-  --jira-url        "$JIRA_URL" \
-  --scripts-dir     "$COMMON_SCRIPTS_DIR" \
-  --component-name  "$COMPONENT_NAME" \
-  --product-context "$PRODUCT_CONTEXT" \
-  ${ASSIGNEE:+--assignee "$ASSIGNEE"}
-```
-
----
-
-## Print Final Summary
+Print the following, substituting all variable values:
 
 ```
-=== onboard-konflux-components-for-odh-and-rhoai — Run Complete ===
+=== onboard-konflux-components-for-odh-and-rhoai — Phase 1 Complete ===
 
   Component      : <COMPONENT_NAME>
   Product        : <PRODUCT_CONTEXT>
-  Jira           : <JIRA_URL>
+  Jira           : <JIRA_URL> (status: Review)
 
-PRs / MRs:
-  quay            : <steps.quay.status> — <steps.quay.mr_url or "not yet raised">
-  krd             : <steps.krd.status> — <steps.krd.mr_url or "not yet raised">
-  okc             : <steps.okc.status> — <steps.okc.pr_url or "not yet raised">
-  pull_pipelines  : <steps.pull_pipelines.status or "N/A (ODH)">
-  operator        : <steps.operator.status>
-  bundle          : <steps.bundle.status>
-  delivery_repo   : <steps.delivery_repo.status or "N/A (ODH)">
-  product_listing : <steps.product_listing.status or "N/A (ODH)">
-  auto_merge      : <steps.auto_merge.status or "N/A (ODH)">
-  renovate        : <steps.renovate.status or "N/A (ODH)">
-  renovate_sync   : <steps.renovate_sync.status or "N/A (ODH)">
-  onboarder_workflow: <steps.onboarder_workflow.status or "N/A (RHOAI)">
+PRs / MRs raised:
+  Step 2 Quay MR    : <QUAY_MR>
+  Step 3 KRD MR     : <KRD_MR>
+  Step 4 OKC PR     : <OKC_PR>
+  Step 5 Workflow   : pending KRD+OKC merge (deferred_workflow.sh running in background)
+  Step 6 Operator   : <OP_PR>  (or "N/A" if is_operator=false)
+  Step 7 Bundle     : <BDLPR>
 
-Newly merged this run : <NEWLY_MERGED or "none">
-State file            : $PIPELINE_STATE
+Background processes:
+  monitor_quay.pid       log: $WORKDIR/monitor_quay.log
+  monitor_krd.pid        log: $WORKDIR/monitor_krd.log
+  monitor_okc.pid        log: $WORKDIR/monitor_okc.log
+  monitor_operator.pid   log: $WORKDIR/monitor_operator.log   [if is_operator=true]
+  deferred_workflow.pid  log: $WORKDIR/deferred_workflow.log
+  monitor_completion.pid log: $WORKDIR/monitor_completion.log
 
-Re-run this skill after PRs/MRs are merged to advance the pipeline.
+State file: $WORKDIR/pipeline_state.json
+
+The Jira ticket will move to Resolved automatically when all PRs/MRs are merged.
+
+IMPORTANT: Bundle PR (Step 7) contains a SHA256 placeholder in bundle/bundle-patch.yaml.
+Replace it with the actual Konflux image digest BEFORE merging the bundle PR.
+The digest is available after the Tekton PR (Step 5) merges and a Konflux build succeeds.
 ```
 
 ---
@@ -571,19 +754,15 @@ Re-run this skill after PRs/MRs are merged to advance the pipeline.
 | `kustomize` not found | 1 | Run `install.sh` (creates kubectl-backed shim) |
 | YAML not attached to Jira | 3 | Run `/create-component-onboarding-jira <jira-url>` first |
 | YAML fails schema validation | 3 | Fix YAML, re-upload to Jira, re-run skill |
-| VPN not active | 4, 8b, 8g, 8h | Activate Red Hat VPN; re-run (idempotent) |
-| Quay MR fails 3× | 8a | Check VPN and `GITLAB_TOKEN` `api` scope |
-| Delivery repo MR fails 3× | 8b | Check VPN and GITLAB_TOKEN `write_repository` scope |
-| KRD MR fails | 8c | Check VPN; `GITLAB_TOKEN` needs `write_repository` scope |
-| OKC/RKC PR fails | 8d | Verify `GITHUB_TOKEN` `repo` scope and push access |
-| Pull pipelines PR fails 3× | 8e | Check GITHUB_TOKEN push access to rhoai-konflux-central |
-| Operator PR fails | 8f | Verify `GITHUB_TOKEN` push access to `opendatahub-operator` |
-| Bundle PR fails | 8g | Verify `GITHUB_TOKEN` push access to `ODH-Build-Config` |
-| Product listing MR fails | 8h | Check VPN; delivery_repo must be merged first |
-| Onboarder workflow 422 | 9a | krd or okc not yet merged — check their status and re-run |
-| Auto-merge PR fails 3× | 8i | Check GITHUB_TOKEN push access to rhods-devops-infra |
-| Renovate PR fails 3× | 8j | Check GITHUB_TOKEN push access to rhoai-konflux-central |
-| Renovate sync workflow 403 | 9b | GITHUB_TOKEN needs `actions:write` scope |
-| Jira `--status "Resolved"` fails | 13 | Check available Jira transitions |
-| State lost / fresh checkout | Any | Re-run; Step 5 restores state from Jira labels |
-| PR/MR still not detected merged | 6 | Check if URL in pipeline_state.json is correct; verify API connectivity |
+| VPN not active | 5, 6 | Activate Red Hat VPN; re-run (idempotent via `pipeline_state.json`) |
+| Quay MR fails 3× | 5 | Check VPN and `GITLAB_TOKEN` `api` scope |
+| KRD MR fails | 6 | Check VPN; `GITLAB_TOKEN` needs `write_repository` scope |
+| OKC PR fails | 7 | Verify `GITHUB_TOKEN` `repo` scope and push access |
+| Operator PR fails | 8 | Verify `GITHUB_TOKEN` push access to `opendatahub-operator` |
+| Bundle PR fails | 9 | Verify `GITHUB_TOKEN` push access to `ODH-Build-Config` |
+| Deferred workflow 422 error | 10 deferred | OKC PR not yet merged; script waits automatically |
+| Deferred workflow times out (3h) | 10 deferred | Check `deferred_workflow.log`; re-run script manually |
+| Tekton PR not in workflow logs | 10 deferred | Check run URL in Jira; update `pipeline_state.json` manually |
+| Completion monitor times out (4h) | 12 | Check `.result` files; re-run `monitor_completion.sh` |
+| Jira `--status "Resolved"` fails | 12 | Check available Jira transitions; adjust status name |
+| Re-run needed after failure | Any | Re-invoke skill; `pipeline_state.json` skips completed steps |
