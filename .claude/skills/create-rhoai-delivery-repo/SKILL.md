@@ -1,7 +1,7 @@
 ---
 name: create-rhoai-delivery-repo
 description: Creates an RHOAI delivery repository by raising a GitLab MR to pyxis-repo-configs. Reads component details from the Jira attachment, checks if the delivery repo already exists, and if not, adds the repository entry to products/rhoai/rhoai.yaml and raises and monitors a GitLab MR. VPN required.
-allowed-tools: Bash
+allowed-tools: Bash, Read, Edit, Write
 user-invocable: true
 ---
 
@@ -53,10 +53,6 @@ onboarding pipeline (which places the YAML in the working directory automaticall
 SKILL_DIR is the absolute path of the directory containing this SKILL.md.
 COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
 
-**Idempotency fast-path:** If invoked with `--existing-mr-url <url>`, print
-`MR already raised: <url>` and exit 0. The orchestrator passes this when the URL is already
-recorded in `pipeline_state.json`.
-
 ---
 
 ## Step 0: Parse Inputs
@@ -103,14 +99,34 @@ recorded in `pipeline_state.json`.
 
 Check in order. Stop with a remediation message if any check fails.
 
+Always required:
 ```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
-  --env "GITLAB_USER GITLAB_TOKEN" \
-  --tools "uv git curl"
+if [[ -z "${GITLAB_USER:-}" ]]; then
+  echo "ERROR: GITLAB_USER is not set. export GITLAB_USER=yourusername"; exit 1
+fi
+if [[ -z "${GITLAB_TOKEN:-}" ]]; then
+  echo "ERROR: GITLAB_TOKEN is not set. export GITLAB_TOKEN=yourtoken (needs api + write_repository scope)"; exit 1
+fi
+if ! command -v uv &>/dev/null; then
+  echo "ERROR: uv is not installed. curl -LsSf https://astral.sh/uv/install.sh | sh"; exit 1
+fi
+if ! command -v git &>/dev/null; then
+  echo "ERROR: git is not installed."; exit 1
+fi
+if ! command -v curl &>/dev/null; then
+  echo "ERROR: curl is not installed."; exit 1
+fi
+```
 
+Required only when `JIRA_URL` is non-empty:
+```bash
 if [[ -n "$JIRA_URL" ]]; then
-  bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
-    --env "JIRA_USER_EMAIL JIRA_API_TOKEN"
+  if [[ -z "${JIRA_USER_EMAIL:-}" ]]; then
+    echo "ERROR: JIRA_USER_EMAIL is not set. export JIRA_USER_EMAIL=you@example.com"; exit 1
+  fi
+  if [[ -z "${JIRA_API_TOKEN:-}" ]]; then
+    echo "ERROR: JIRA_API_TOKEN is not set. export JIRA_API_TOKEN=your-api-token"; exit 1
+  fi
 fi
 ```
 
@@ -119,7 +135,12 @@ fi
 ## Step 2: Set Up Working Directory
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/init_workdir.sh" --jira-url "${JIRA_URL:-}")"
+if [[ -n "$JIRA_ID" ]]; then
+  WORKDIR="$(pwd)/${JIRA_ID}"
+else
+  WORKDIR="$(pwd)"
+fi
+mkdir -p "$WORKDIR"
 echo "Working directory: $WORKDIR"
 ```
 
@@ -157,12 +178,11 @@ ERROR in Step 3: No component_onboarding_details.yaml found and no Jira URL prov
   Either provide a Jira URL or run from within the master onboarding pipeline.
 ```
 
-**3d. Fetch Jira issue details** (only when `JIRA_URL` is non-empty):
+**3d. Fetch Jira issue details** (skip if `$WORKDIR/component_onboarding_details.json` already
+exists; only when `JIRA_URL` is non-empty):
 ```bash
-if [[ ! -f "$WORKDIR/component_onboarding_details.json" ]]; then
-  cd "$WORKDIR"
-  uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
-fi
+cd "$WORKDIR"
+uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
 ```
 
 On exit 1: display stderr and stop:
@@ -174,40 +194,43 @@ ERROR in Step 3d (Fetch Jira): Could not fetch issue details. Aborting.
 
 ## Step 4: Parse YAML and Derive Variables
 
+Use the `Read` tool to read `$WORKDIR/component_onboarding_details.yaml`.
+
+Extract (all under the `inputs:` key):
+
+| Variable | YAML field | Required |
+|----------|-----------|----------|
+| `COMPONENT_NAME` | `inputs.component_name` | Yes |
+| `TARGET_RHOAI_VERSION` | `inputs.target_rhoai_version` | Yes |
+
+If any required field is missing, stop:
+```
+ERROR in Step 4: Missing required field '<field>' in component_onboarding_details.yaml.
+  Re-generate the YAML with /create-component-onboarding-jira <jira-url>.
+```
+
+Derive version components and content stream tag from `TARGET_RHOAI_VERSION`:
 ```bash
-YAML_FILE="$WORKDIR/component_onboarding_details.yaml"
-COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}')
-TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}')
+# TARGET_RHOAI_VERSION is already in canonical form: x.y or x.y-ea-n
+if [[ "$TARGET_RHOAI_VERSION" =~ ^([0-9]+)\.([0-9]+)-ea-([0-9]+)$ ]]; then
+  VERSION_X="${BASH_REMATCH[1]}"
+  VERSION_Y="${BASH_REMATCH[2]}"
+  VERSION_N="${BASH_REMATCH[3]}"
+  CONTENT_STREAM_TAG="v${VERSION_X}.${VERSION_Y}-ea.${VERSION_N}"
+elif [[ "$TARGET_RHOAI_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+  VERSION_X="${BASH_REMATCH[1]}"
+  VERSION_Y="${BASH_REMATCH[2]}"
+  VERSION_N=""
+  CONTENT_STREAM_TAG="v${VERSION_X}.${VERSION_Y}"
+else
+  echo "ERROR: Cannot parse target_rhoai_version '${TARGET_RHOAI_VERSION}'."
+  echo "  Expected canonical form: x.y  OR  x.y-ea-n  (e.g. 3.4 or 3.4-ea-2)"
+  echo "  Re-generate the YAML with /create-component-onboarding-jira <jira-url>."
+  exit 1
+fi
 
-for _field in COMPONENT_NAME TARGET_RHOAI_VERSION; do
-  [[ -z "${!_field}" ]] && {
-    echo "ERROR in Step 4: Missing required field '${_field}' in component_onboarding_details.yaml."
-    echo "  Re-generate the YAML with /create-component-onboarding-jira <jira-url>."
-    exit 1
-  }
-done
-
-eval "$(bash "$COMMON_SCRIPTS_DIR/parse_rhoai_version.sh" \
-  --version "$TARGET_RHOAI_VERSION" \
-  --component "$COMPONENT_NAME")"
-# Sets: CONTENT_STREAM_TAG, REPOSITORY_NAME, and other version vars
-
-# Parse display fields (may contain spaces — use sed, not awk)
-SHORT_DESCRIPTION=$(grep -m1 'short_description:' "$YAML_FILE" | sed 's/^[[:space:]]*short_description:[[:space:]]*//')
-LONG_DESCRIPTION=$(grep -m1 'long_description:' "$YAML_FILE" | sed 's/^[[:space:]]*long_description:[[:space:]]*//')
-RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"')
-
-# Fall back to COMPONENT_NAME if the fields are absent (ODH or older YAMLs)
-[[ -z "$SHORT_DESCRIPTION" ]] && SHORT_DESCRIPTION="$COMPONENT_NAME"
-[[ -z "$LONG_DESCRIPTION" ]]  && LONG_DESCRIPTION="$COMPONENT_NAME"
-# Fall back to Generally Available for older YAMLs that predate release_category
-[[ -z "$RELEASE_CATEGORY" ]] && RELEASE_CATEGORY="Generally Available"
-
-# Compute display name: replace hyphens with spaces, title-case each word,
-# then uppercase known acronyms (ODH, RHOAI, AI, CLI, API).
-DISPLAY_NAME=$(echo "$COMPONENT_NAME" | tr '-' ' ' \
-  | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1' \
-  | sed -E 's/\bOdh\b/ODH/g; s/\bRhoai\b/RHOAI/g; s/\bAi\b/AI/g; s/\bCli\b/CLI/g; s/\bApi\b/API/g')
+# Repository identifier used for idempotency checks
+REPOSITORY_NAME="rhoai/${COMPONENT_NAME}-rhel9"
 ```
 
 Print resolved values:
@@ -216,10 +239,6 @@ COMPONENT_NAME       : $COMPONENT_NAME
 TARGET_RHOAI_VERSION : $TARGET_RHOAI_VERSION
 REPOSITORY_NAME      : $REPOSITORY_NAME
 CONTENT_STREAM_TAG   : $CONTENT_STREAM_TAG
-RELEASE_CATEGORY     : $RELEASE_CATEGORY
-DISPLAY_NAME         : $DISPLAY_NAME
-SHORT_DESCRIPTION    : $SHORT_DESCRIPTION
-LONG_DESCRIPTION     : $LONG_DESCRIPTION
 PYXIS_URL            : $PYXIS_URL
 ```
 
@@ -275,7 +294,54 @@ If `REPO_EXISTS=false`: continue to Step 6.
 
 ---
 
-## Step 6: Set Up GitLab Playpen (Clone)
+## Step 6: Check for Existing Open MR in Jira Comments
+
+Skip this step if `$WORKDIR/component_onboarding_details.json` does not exist.
+
+Use the `Read` tool to read `$WORKDIR/component_onboarding_details.json`.
+
+Search `fields.comment.comments[].body` for GitLab MR URLs matching:
+```
+https://gitlab\.cee\.redhat\.com/[^/\s]+/[^/\s]+/-/merge_requests/\d+
+```
+
+For each URL found, run:
+```bash
+GITLAB_SSL_VERIFY=false uv run --script <COMMON_SCRIPTS_DIR>/monitor_gitlab_mr.py \
+  --mr-url "<found-url>" --check-only
+```
+
+Parse stdout:
+- If `state=opened` and the `title=` line contains `COMPONENT_NAME` or `REPOSITORY_NAME`:
+  ```bash
+  MR_URL="<found-url>"
+  if [[ -n "$JIRA_URL" ]]; then
+    uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+      --comment "Found existing open GitLab MR for '${REPOSITORY_NAME}': ${MR_URL}
+  Resuming monitoring of this MR."
+  fi
+  ```
+  Print: `Found existing open MR: $MR_URL. Skipping MR creation and jumping to monitor.`
+  **Set `MR_URL` and jump directly to Step 11** (Monitor MR).
+
+- If `state=merged`:
+  ```bash
+  if [[ -n "$JIRA_URL" ]]; then
+    uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+      --add-label "delivery-repo-exists" \
+      --comment "Previously raised MR has been merged: <found-url>
+  The delivery repository '${REPOSITORY_NAME}' has been provisioned."
+  fi
+  ```
+  Print success and **stop with exit 0.**
+
+- If `state=closed`: note it and continue checking other URLs, then continue to Step 7.
+
+If no matching open MR is found, continue to Step 7.
+
+---
+
+## Step 7: Set Up GitLab Playpen (Clone)
 
 Run from inside `$WORKDIR`:
 
@@ -295,7 +361,7 @@ DEST_BRANCH=$(echo "$PLAYPEN_OUTPUT" | tail -1)
 
 On exit 1: display stderr and stop:
 ```
-ERROR in Step 6 (Playpen setup): Clone or push failed. See details above.
+ERROR in Step 7 (Playpen setup): Clone or push failed. See details above.
   Check GITLAB_TOKEN has 'write_repository' scope and push access to $PYXIS_PATH.
   Ensure VPN is active and you can reach gitlab.cee.redhat.com.
 ```
@@ -309,57 +375,97 @@ git push origin "$DEST_BRANCH"
 
 ---
 
-## Step 7: Add Entry to products/rhoai/rhoai.yaml
+## Step 8: Add Entry to products/rhoai/rhoai.yaml
 
-```bash
-RHOAI_YAML="$CLONE_DIR/products/rhoai/rhoai.yaml"
-[[ -f "$RHOAI_YAML" ]] || {
-  echo "ERROR in Step 7: products/rhoai/rhoai.yaml not found in $CLONE_DIR."
-  echo "  Verify PYXIS_URL points to the correct pyxis-repo-configs repository."
-  exit 1
-}
+Use the `Read` tool to read `$CLONE_DIR/products/rhoai/rhoai.yaml`.
 
-RESULT=$(uv run --script "$COMMON_SCRIPTS_DIR/append_delivery_repo_entry.py" \
-  --yaml-file           "$RHOAI_YAML" \
-  --repository-name     "$REPOSITORY_NAME" \
-  --content-stream-tag  "$CONTENT_STREAM_TAG" \
-  --release-category    "$RELEASE_CATEGORY" \
-  --display-name        "$DISPLAY_NAME" \
-  --short-description   "$SHORT_DESCRIPTION" \
-  --long-description    "$LONG_DESCRIPTION")
-if [[ "$RESULT" == "already-present" ]]; then
-  echo "Entry for ${REPOSITORY_NAME} already present in rhoai.yaml — skipping edit."
-else
-  echo "Entry for ${REPOSITORY_NAME} added to products/rhoai/rhoai.yaml."
-fi
+If the file does not exist, stop:
 ```
+ERROR in Step 8: products/rhoai/rhoai.yaml not found in $CLONE_DIR.
+  Verify PYXIS_URL points to the correct pyxis-repo-configs repository.
+```
+
+**Idempotency check:** if `repository: $REPOSITORY_NAME` is already present in the file, skip
+directly to Step 9 (no edits needed).
+
+Locate the `repositories:` array in the file. Append the following new entry at the end of the
+array, maintaining the indentation style already used in the file (typically 2 spaces for list
+items):
+
+```yaml
+- image_type: Layered
+  base_rhel_version: rhel9
+  repository:
+    repository: rhoai/<COMPONENT_NAME>-rhel9
+    release_categories:
+      - Generally Available
+    includes_multiple_content_streams: true
+    auto_rebuild_tags: []
+    content_stream_tags: ['<CONTENT_STREAM_TAG>']
+    build_categories:
+      - Standalone image
+    team_id: 617017858ebd9a62aec7c3b8
+    display_data:
+      name: <COMPONENT_NAME>
+      short_description: <COMPONENT_NAME>
+      long_description: <COMPONENT_NAME>
+    vendor_label: redhat
+    application_categories:
+      - Developer Tools
+    privileged_images_allowed: false
+    publish_on_push: true
+    documentation_links: []
+    contacts:
+      *team_contacts
+    use_latest: false
+    requires_terms: true
+```
+
+Substitute `<COMPONENT_NAME>` with `$COMPONENT_NAME` and `<CONTENT_STREAM_TAG>` with
+`$CONTENT_STREAM_TAG`. The `contacts: *team_contacts` line uses a YAML anchor defined earlier in
+the file — include it verbatim.
+
+Use the `Edit` tool to append this block to the end of the `repositories:` array.
+
+After editing, use the `Read` tool to verify:
+- `repository: rhoai/${COMPONENT_NAME}-rhel9` is present
+- `content_stream_tags: ['${CONTENT_STREAM_TAG}']` is correct
+- Surrounding entries are undisturbed and the YAML structure is valid
+
+If verification fails, apply a corrective `Edit` before continuing.
 
 ---
 
-## Step 8: Commit and Push
+## Step 9: Commit and Push
 
 ```bash
-bash "$COMMON_SCRIPTS_DIR/git_commit_push.sh" \
-  --clone-dir "$CLONE_DIR" \
-  --files     "products/rhoai/rhoai.yaml" \
-  --message   "Add ${REPOSITORY_NAME} delivery repository for ${COMPONENT_NAME}
+cd "$CLONE_DIR"
+git add products/rhoai/rhoai.yaml
+git status   # confirm only the expected file is staged
+git commit -m "Add ${REPOSITORY_NAME} delivery repository for ${COMPONENT_NAME}
 
 Adds a new repository entry to products/rhoai/rhoai.yaml:
   repository: ${REPOSITORY_NAME}
   content_stream_tags: ['${CONTENT_STREAM_TAG}']
 
-Related: ${JIRA_ID:-no-jira}" \
-  --branch    "$DEST_BRANCH"
+Related: ${JIRA_ID}"
+git push origin "$DEST_BRANCH"
 ```
 
-On exit 1, display stderr and stop:
+If push fails with "shallow update not allowed":
+```bash
+git fetch --unshallow origin
+git push origin "$DEST_BRANCH"
 ```
-ERROR in Step 8 (Push): Could not push branch '$DEST_BRANCH'. See details above.
+
+On any other push failure, display stderr and stop:
+```
+ERROR in Step 9 (Push): Could not push branch '$DEST_BRANCH'. See details above.
 ```
 
 ---
 
-## Step 9: Raise MR (up to 3 attempts)
+## Step 10: Raise MR (up to 3 attempts)
 
 ```bash
 MR_URL=$(GITLAB_SSL_VERIFY=false uv run --script <COMMON_SCRIPTS_DIR>/raise_gitlab_mr.py \
@@ -390,14 +496,14 @@ On failure:
 
 After 3 failures, stop:
 ```
-ERROR in Step 9 (Raise MR): Could not create MR after 3 attempts. See errors above. Aborting.
+ERROR in Step 10 (Raise MR): Could not create MR after 3 attempts. See errors above. Aborting.
 ```
 
 On success, update Jira (only when `JIRA_URL` is non-empty):
 ```bash
 uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
   --add-label "delivery-repo-mr-raised" \
-  --comment "[step:delivery_repo] GitLab MR raised to create RHOAI delivery repository '${REPOSITORY_NAME}'.
+  --comment "GitLab MR raised to create RHOAI delivery repository '${REPOSITORY_NAME}'.
 
 MR URL: $MR_URL
 
@@ -408,11 +514,99 @@ Content stream tag: ${CONTENT_STREAM_TAG}
 The delivery repository will be provisioned automatically once the MR is merged."
 ```
 
-Print the MR URL and exit 0.
+> **CRITICAL: Proceed immediately to Step 11.** Do NOT stop here. Step 11 is mandatory
+> follow-through after every successful MR creation.
 
 ---
 
-## Step 10: Report Completion
+## Step 11: Monitor MR
+
+```bash
+RESULT=$(GITLAB_SSL_VERIFY=false uv run --script <COMMON_SCRIPTS_DIR>/monitor_gitlab_mr.py \
+  --mr-url "$MR_URL" \
+  --timeout 60)
+```
+
+The script polls every 60 seconds and writes progress to stderr. Read **stdout** for the result.
+
+**`merged` (exit 0):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --add-label "delivery-repo-created" \
+    --remove-label "delivery-repo-mr-raised" \
+    --comment "GitLab MR merged: $MR_URL
+
+The delivery repository '${REPOSITORY_NAME}' has been provisioned in the Red Hat container registry.
+Provisioning typically completes within a few minutes of merge."
+fi
+```
+Print:
+```
+MR merged: $MR_URL
+Delivery repository '$REPOSITORY_NAME' is being provisioned.
+```
+Continue to Step 12.
+
+**`closed` (exit 1):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --add-label "delivery-repo-mr-closed" \
+    --comment "GitLab MR was closed without merging: $MR_URL
+Please review and re-run /create-rhoai-delivery-repo <jira-url>."
+fi
+```
+Stop with:
+```
+ERROR in Step 11 (Monitor MR): MR was closed without merging. Check: $MR_URL
+```
+
+**`pipeline_failed` or `pipeline_canceled` (exit 1):**
+
+Attempt automated fix:
+1. Use `Read` to re-read `$CLONE_DIR/products/rhoai/rhoai.yaml`.
+2. Inspect for obvious YAML errors (indentation, duplicate keys, malformed anchors).
+3. If fixable: use `Edit` to correct, then:
+   ```bash
+   cd "$CLONE_DIR"
+   git add products/rhoai/rhoai.yaml
+   git commit --amend --no-edit
+   git push --force-with-lease origin "$DEST_BRANCH"
+   ```
+   Update Jira:
+   ```bash
+   uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+     --comment "Pipeline failed on MR $MR_URL. Attempted automated fix and force-pushed update.
+Please review the MR pipeline and re-run if the issue persists."
+   ```
+   **Jump back to Step 11** to re-monitor the updated MR (once).
+4. If the pipeline fails again or the issue is not fixable, update Jira with failure details and stop:
+   ```
+   ERROR in Step 11 (Monitor MR): Pipeline failed after fix attempt. Manual intervention needed.
+   MR: $MR_URL
+   ```
+
+**`timeout` (exit 1):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --comment "MR monitoring timed out after 60 minutes: $MR_URL
+The MR is still open. Check it manually and re-run /create-rhoai-delivery-repo <jira-url>
+when ready — it will detect the open MR and resume monitoring."
+fi
+```
+Print:
+```
+WARNING: MR monitoring timed out after 60 minutes.
+The MR is still open: $MR_URL
+Re-run this skill — it will detect the open MR in Jira comments and resume monitoring.
+```
+Continue to Step 12 (reporting only; no hard stop).
+
+---
+
+## Step 12: Report Completion
 
 Print:
 ```
@@ -420,11 +614,14 @@ Done.
 
   products/rhoai/rhoai.yaml  — ${REPOSITORY_NAME} entry added
   content_stream_tags        : ['${CONTENT_STREAM_TAG}']
-  GitLab MR                  : $MR_URL
-  Jira                       : ${JIRA_ID:-(none)} — label: delivery-repo-mr-raised
+  GitLab MR                  : $MR_URL — $RESULT
+  Jira                       : ${JIRA_ID:-(none)} — label: delivery-repo-created
 
-The delivery repository will be provisioned once the MR is merged:
+The delivery repository will be available at:
   https://quay.io/${REPOSITORY_NAME}
+
+Note: short_description and long_description default to '${COMPONENT_NAME}'.
+  Update them in the MR before merge if a better description is needed.
 ```
 
 ---
@@ -438,10 +635,14 @@ The delivery repository will be provisioned once the MR is merged:
 | `JIRA_USER_EMAIL` not set | 1 | `export JIRA_USER_EMAIL=you@example.com` |
 | `JIRA_API_TOKEN` not set | 1 | `export JIRA_API_TOKEN=your-api-token` |
 | `uv` not installed | 1 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| VPN not active | 5, 6, 9 | Connect to Red Hat VPN then retry |
+| VPN not active | 5, 7, 10, 11 | Connect to Red Hat VPN then retry |
 | No YAML and no Jira URL | 3 | Provide Jira URL or run from master pipeline |
 | YAML attachment missing on Jira | 3b | Run `/create-component-onboarding-jira <jira-url>` first |
 | `target_rhoai_version` missing/invalid | 4 | Fix field in YAML and re-upload to Jira |
 | Delivery repo already exists | 5 | Expected — exits 0; Jira labelled `delivery-repo-exists` |
-| Push fails (shallow update) | 6, 8 | `git fetch --unshallow origin && git push origin "$DEST_BRANCH"` |
-| MR creation fails 3× | 9 | Check GITLAB_TOKEN scopes; ensure VPN active |
+| Open MR already found in Jira comments | 6 | Expected — jumps to Step 11 to monitor |
+| Push fails (shallow update) | 7, 9 | `git fetch --unshallow origin && git push origin "$DEST_BRANCH"` |
+| MR creation fails 3× | 10 | Check GITLAB_TOKEN scopes; ensure VPN active |
+| MR closed without merge | 11 | Review MR manually; re-run skill |
+| Pipeline failed | 11 | Skill attempts auto-fix and retries monitor once |
+| MR monitoring timeout (60 min) | 11 | MR still open; re-run to resume monitoring |
