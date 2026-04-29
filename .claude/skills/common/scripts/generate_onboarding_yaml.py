@@ -23,7 +23,6 @@ def main():
     p.add_argument("--target-rhoai-version", help="RHOAI only")
     p.add_argument("--long-description", help="RHOAI only")
     p.add_argument("--short-description", help="RHOAI only")
-    p.add_argument("--release-category", choices=["Generally Available", "Tech Preview", "Beta"], help="RHOAI only")
     p.add_argument("--is-operator", action="store_true", default=False)
     p.add_argument("--operator-manifest-src-path")
     p.add_argument("--operator-manifest-dest-path")
@@ -38,15 +37,6 @@ def main():
     lines.append(f"  context_path: {args.context_path}")
     lines.append(f"  dockerfile_path: {args.dockerfile_path}")
 
-    dockerfile_name = args.dockerfile_path.split("/")[-1]
-    if product == "RHOAI" and not "Dockerfile.konflux" in dockerfile_name:
-        print(
-            f"ERROR: For RHOAI, the Dockerfile name must contain 'Dockerfile.konflux' "
-            f"(got '{dockerfile_name}')",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     if product == "ODH":
         if not args.build_type:
             print("ERROR: --build-type is required for ODH", file=sys.stderr)
@@ -56,15 +46,11 @@ def main():
         if not args.target_rhoai_version:
             print("ERROR: --target-rhoai-version is required for RHOAI", file=sys.stderr)
             sys.exit(1)
-        if not args.release_category:
-            print("ERROR: --release-category is required for RHOAI", file=sys.stderr)
-            sys.exit(1)
         archs = [a.strip() for a in (args.architectures or "x86_64,arm64").split(",")]
         lines.append("  architectures:")
         for arch in archs:
             lines.append(f"    - {arch}")
         lines.append(f"  target_rhoai_version: {args.target_rhoai_version}")
-        lines.append(f"  release_category: \"{args.release_category}\"")
         lines.append(f"  long_description: {args.long_description or ''}")
         lines.append(f"  short_description: {args.short_description or ''}")
 
