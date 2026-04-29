@@ -1,6 +1,6 @@
 ---
 name: create-pull-pipelines-in-rhoai-konflux-central
-description: Adds a pull-request Tekton PipelineRun YAML to the rhoai-konflux-central GitHub repository for a new RHOAI component, then raises a GitHub PR targeting the main branch.
+description: Adds a pull-request Tekton PipelineRun YAML to the rhoai-konflux-central GitHub repository for a new RHOAI component, then raises and monitors a GitHub PR targeting the main branch.
 allowed-tools: Bash
 user-invocable: true
 ---
@@ -10,6 +10,7 @@ user-invocable: true
 Creates a Tekton `PipelineRun` resource for pull-request builds of a new RHOAI component by:
 1. Generating a pull-request PipelineRun YAML under `pipelineruns/<repo_name>/.tekton/`.
 2. Raising a pull request to the `main` branch of `rhoai-konflux-central`.
+3. Monitoring the PR until it merges.
 
 > **CRITICAL — `RHOAI_KONFLUX_CENTRAL_REPO_URL` overrides the default repo for every step.**
 > This env var is resolved once in Step 0 into `RKC_URL` and `RKC_PATH`.
@@ -48,15 +49,6 @@ be placed in the working directory. Otherwise the Jira attachment will be downlo
 SKILL_DIR is the absolute path of the directory containing this SKILL.md.
 COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
 
-### Early-exit: `--existing-pr-url`
-
-If the skill is invoked with `--existing-pr-url <url>`:
-```
-PR already raised: <url>
-```
-Exit 0 immediately. The orchestrator passes this flag when the PR URL is already recorded in
-`pipeline_state.json`, so no further work is needed.
-
 ---
 
 ## Substitution Rules
@@ -78,7 +70,7 @@ on the `main` branch of `red-hat-data-services/konflux-central`.
 | `51094` (hardcoded PR number suffix in `name:`) | `{{pull_request_number}}` | PAC template variable |
 | `Dockerfile.konflux` in `dockerfile:` | `${DOCKERFILE_PATH}` | YAML `dockerfile_path` |
 | `.` in `path-context:` | `${CONTEXT_PATH_NORMALIZED}` | YAML `context_path` |
-| `[{"type": "npm", "path": "."}]` in `prefetch-input:` | `${PREFETCH_INPUT}` (entire param omitted when `[]`) | `detect_prefetch_input.sh` |
+| `[{"type": "npm", "path": "."}]` in `prefetch-input:` | `${PREFETCH_INPUT}` | `detect_prefetch_input.sh` |
 | All 4 hardcoded `build-platforms` entries | `${PLATFORMS[@]}` | YAML `architectures` |
 | `https://github.com/red-hat-data-services/konflux-central.git` in `pipelineRef.url` | `${RKC_URL}` | env var / default |
 
@@ -200,12 +192,10 @@ ERROR in Step 3: No component_onboarding_details.yaml found and no Jira URL prov
 
 ### 3d. Fetch Jira details
 
-Only when `JIRA_URL` is non-empty and `$WORKDIR/component_onboarding_details.json` does not yet exist:
+Skip if `$WORKDIR/component_onboarding_details.json` already exists. Only when `JIRA_URL` non-empty:
 ```bash
-if [[ -n "$JIRA_URL" && ! -f "$WORKDIR/component_onboarding_details.json" ]]; then
-  cd "$WORKDIR"
-  uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
-fi
+cd "$WORKDIR"
+uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
 ```
 
 On exit 1: display stderr and stop with:
@@ -311,12 +301,51 @@ echo "PipelineRun already exists in RKC main branch. Nothing to do."
 exit 0
 ```
 
-**`HTTP_STATUS == 404`**: continue to Step 6.
+**`HTTP_STATUS == 404`**: continue to Step 5.
 
 **Any other status** (e.g. 401, 403, 5xx): warn and continue — do not fail hard on transient connectivity issues:
 ```
 WARN: GitHub API returned HTTP $HTTP_STATUS for fast-path check. Proceeding anyway.
 ```
+
+---
+
+## Step 5: Check for Existing Open PR in Jira Comments
+
+Skip this step entirely if `$WORKDIR/component_onboarding_details.json` does not exist.
+
+Extract PR URLs from `$WORKDIR/component_onboarding_details.json`:
+```bash
+EXISTING_PR_URLS=$(jq -r '.fields.comment.comments[].body' \
+  "$WORKDIR/component_onboarding_details.json" 2>/dev/null \
+  | grep -oE 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/pull/[0-9]+' \
+  | sort -u || true)
+```
+
+For each URL found, run:
+```bash
+uv run --script <COMMON_SCRIPTS_DIR>/monitor_github_pr.py \
+  --pr-url "<found-url>" --check-only
+```
+
+Parse stdout:
+- If `state=open` **and** the `title=` line contains `COMPONENT_NAME` and `pull-request`:
+  - This is the open PR for the same component. Resume monitoring.
+  ```bash
+  PR_URL="<found-url>"
+  if [[ -n "$JIRA_URL" ]]; then
+    uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+      --comment "Found existing open GitHub PR for '${COMPONENT_NAME}' pull-request pipeline: ${PR_URL}
+Resuming monitoring of this PR."
+  fi
+  echo "Found existing open PR: $PR_URL. Skipping PR creation and jumping to monitor."
+  ```
+  **Set `PR_URL` and jump directly to Step 11** (Monitor PR).
+
+- If `state=merged`: update Jira with `rkc-pull-changes-done` label and a merged comment. **Stop exit 0.**
+- If `state=closed`: note it and continue searching.
+
+If no matching open PR found, continue to Step 6.
 
 ---
 
@@ -388,16 +417,6 @@ eval "$(bash "$COMMON_SCRIPTS_DIR/detect_prefetch_input.sh" \
   --context-path "$CONTEXT_PATH_NORMALIZED")"
 # Sets PREFETCH_INPUT (JSON array string, defaults to [] on error)
 echo "PREFETCH_INPUT: $PREFETCH_INPUT"
-
-# Build the prefetch-input param block — omit entirely when PREFETCH_INPUT is an empty array
-if [[ "$PREFETCH_INPUT" == "[]" ]]; then
-  PREFETCH_PARAM_BLOCK=""
-  echo "PREFETCH_INPUT is empty — prefetch-input param will be omitted from PipelineRun."
-else
-  PREFETCH_PARAM_BLOCK="  - name: prefetch-input
-    value: |
-      ${PREFETCH_INPUT}"
-fi
 ```
 
 ### 8b. Write the file
@@ -465,13 +484,13 @@ ${PLATFORM_LIST}
     value: ${CONTEXT_PATH_NORMALIZED}
   - name: hermetic
     value: true
-${PREFETCH_PARAM_BLOCK}
+  - name: prefetch-input
+    value: |
+      ${PREFETCH_INPUT}
   - name: build-image-index
     value: true
   - name: enable-slack-failure-notification
     value: "false"
-  - name: additional-build-secret
-    value: "rhel-ai-private-index-auth"
   pipelineRef:
     resolver: git
     params:
@@ -583,7 +602,7 @@ On success, update Jira (only when `JIRA_URL` non-empty):
 ```bash
 uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
   --add-label "rkc-pull-pr-raised" \
-  --comment "[step:pull_pipelines] GitHub PR raised to add pull-request PipelineRun for '${COMPONENT_NAME}' to rhoai-konflux-central.
+  --comment "GitHub PR raised to add pull-request PipelineRun for '${COMPONENT_NAME}' to rhoai-konflux-central.
 
 PR URL: $PR_URL
 Target branch: main
@@ -592,23 +611,100 @@ File: pipelineruns/${REPO_NAME}/.tekton/${PIPELINERUN_FILE}
 PR builds will trigger for '${COMPONENT_NAME}' once this PR is merged."
 ```
 
+> **CRITICAL: Proceed immediately to Step 11.** Do NOT stop here.
+
 ---
 
-## Step 11: Report Completion
+## Step 11: Monitor PR
+
+```bash
+RESULT=$(uv run --script <COMMON_SCRIPTS_DIR>/monitor_github_pr.py \
+  --pr-url "$PR_URL" \
+  --timeout 60)
+```
+
+The script polls every 60 seconds and writes progress to stderr.
+
+**`merged` (exit 0):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --add-label "rkc-pull-changes-done" \
+    --remove-label "rkc-pull-pr-raised" \
+    --comment "GitHub PR merged: $PR_URL
+
+Pull-request Konflux CI is now configured for '${COMPONENT_NAME}'.
+Builds will trigger on pull requests to ${REPO_URL}."
+fi
+```
+Continue to Step 12.
+
+**`closed` (exit 1):** PR closed without merging.
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --comment "GitHub PR was closed without merging: $PR_URL
+Please review and re-run /create-pull-pipelines-in-rhoai-konflux-central ${JIRA_URL} to re-open."
+fi
+```
+Stop with:
+```
+ERROR in Step 11 (Monitor PR): PR was closed without merging. Check: $PR_URL
+```
+
+**`pipeline_failed` or `pipeline_canceled` (exit 1):** Attempt automated fix:
+1. Inspect `$PIPELINERUN_PATH` for YAML validity:
+   ```bash
+   python3 -c "import yaml; yaml.safe_load(open('$PIPELINERUN_PATH'))" 2>&1
+   ```
+2. If YAML is invalid, check for common indentation issues:
+   ```bash
+   grep -n 'value:' "$PIPELINERUN_PATH" | tail -10
+   grep -n 'params:' "$PIPELINERUN_PATH" | head -5
+   ```
+3. If fixable, re-write the file with corrected content (re-run the heredoc from Step 8b with the same variables), then commit and push the fix:
+   ```bash
+   bash "$COMMON_SCRIPTS_DIR/git_commit_push.sh" \
+     --clone-dir "$CLONE_DIR" \
+     --files     "pipelineruns/$REPO_NAME/.tekton/$PIPELINERUN_FILE" \
+     --message   "Fix ${COMPONENT_NAME} pull-request PipelineRun YAML definition" \
+     --branch    "$DEST_BRANCH"
+   ```
+   Update Jira with fix attempt. **Jump back to Step 11** to re-monitor once.
+4. If not fixable: update Jira with failure details and stop:
+   ```
+   ERROR in Step 11 (Monitor PR): CI checks failed and could not be auto-fixed.
+   PR: $PR_URL — manual intervention required.
+   ```
+
+**`timeout` (exit 1):** PR still open after 60 minutes.
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --comment "PR monitoring timed out after 60 minutes: $PR_URL
+The PR is still open. Re-run /create-pull-pipelines-in-rhoai-konflux-central ${JIRA_URL:-} to resume."
+fi
+```
+Print warning and continue to Step 12 (no hard stop).
+
+---
+
+## Step 12: Report Completion
 
 ```
 Done.
 
   pipelineruns/$REPO_NAME/.tekton/$PIPELINERUN_FILE — created
   Target branch       : main
-  GitHub PR           : $PR_URL
-  Jira                : ${JIRA_ID:-(none)} — label: rkc-pull-pr-raised
+  GitHub PR           : $PR_URL — $RESULT
+  Jira                : ${JIRA_ID:-(none)} — label: rkc-pull-changes-done
+
+Pull-request Konflux CI builds will trigger for '$COMPONENT_NAME' on PRs
+in repository: $REPO_URL
 
 Note: Review the prefetch-input array in the PR and update it if auto-detection
 was incorrect or incomplete.
 ```
-
-Print the PR URL and exit 0.
 
 ---
 
@@ -635,4 +731,8 @@ Print the PR URL and exit 0.
 | `architectures` missing | 3e | Add `architectures: [x86_64, arm64]` etc. to YAML |
 | Push fails (shallow) | 6, 9 | `git fetch --unshallow origin && git push origin "$DEST_BRANCH"` |
 | PipelineRun already exists | 4 | Expected — exits 0; Jira labelled `rkc-pull-changes-done` |
+| Open PR already found | 5 | Expected — jumps to Step 11 to monitor |
 | PR creation fails 3× | 10 | Check GITHUB_TOKEN `repo` scope |
+| PR closed without merge | 11 | Review PR manually; re-run skill |
+| Pipeline failed | 11 | Skill attempts auto-fix and retries monitor once |
+| PR monitoring timeout | 11 | PR still open; re-run to resume monitoring |

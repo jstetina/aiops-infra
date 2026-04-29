@@ -186,6 +186,18 @@ eval "$(bash "$COMMON_SCRIPTS_DIR/parse_rhoai_version.sh" \
   --version "$TARGET_RHOAI_VERSION" \
   --component "$COMPONENT_NAME")"
 # Sets: CONTENT_STREAM_TAG, REPOSITORY_NAME, and other version vars
+
+# Parse display fields (may contain spaces — use sed, not awk)
+SHORT_DESCRIPTION=$(grep -m1 'short_description:' "$YAML_FILE" | sed 's/^[[:space:]]*short_description:[[:space:]]*//')
+LONG_DESCRIPTION=$(grep -m1 'long_description:' "$YAML_FILE" | sed 's/^[[:space:]]*long_description:[[:space:]]*//')
+
+# Fall back to COMPONENT_NAME if the fields are absent (ODH or older YAMLs)
+[[ -z "$SHORT_DESCRIPTION" ]] && SHORT_DESCRIPTION="$COMPONENT_NAME"
+[[ -z "$LONG_DESCRIPTION" ]]  && LONG_DESCRIPTION="$COMPONENT_NAME"
+
+# Compute display name: replace hyphens with spaces, then title-case each word
+DISPLAY_NAME=$(echo "$COMPONENT_NAME" | tr '-' ' ' \
+  | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')
 ```
 
 Print resolved values:
@@ -194,6 +206,9 @@ COMPONENT_NAME       : $COMPONENT_NAME
 TARGET_RHOAI_VERSION : $TARGET_RHOAI_VERSION
 REPOSITORY_NAME      : $REPOSITORY_NAME
 CONTENT_STREAM_TAG   : $CONTENT_STREAM_TAG
+DISPLAY_NAME         : $DISPLAY_NAME
+SHORT_DESCRIPTION    : $SHORT_DESCRIPTION
+LONG_DESCRIPTION     : $LONG_DESCRIPTION
 PYXIS_URL            : $PYXIS_URL
 ```
 
@@ -363,9 +378,9 @@ else
       - Standalone image
     team_id: 617017858ebd9a62aec7c3b8
     display_data:
-      name: ${COMPONENT_NAME}
-      short_description: ${COMPONENT_NAME}
-      long_description: ${COMPONENT_NAME}
+      name: ${DISPLAY_NAME}
+      short_description: ${SHORT_DESCRIPTION}
+      long_description: ${LONG_DESCRIPTION}
     vendor_label: redhat
     application_categories:
       - Developer Tools
@@ -577,9 +592,6 @@ Done.
 
 The delivery repository will be available at:
   https://quay.io/${REPOSITORY_NAME}
-
-Note: short_description and long_description default to '${COMPONENT_NAME}'.
-  Update them in the MR before merge if a better description is needed.
 ```
 
 ---

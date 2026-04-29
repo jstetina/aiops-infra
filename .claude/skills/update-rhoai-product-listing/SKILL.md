@@ -12,7 +12,8 @@ The entry is a single line in the `repositories:` array of `product-listings/rho
 This skill handles the full lifecycle:
 
 1. Check if the entry already exists in `product-listings/rhoai/rhoai.yaml`
-2. Clone `pyxis-repo-configs`, append the registry path, push, and raise an MR
+2. Check Jira comments for an in-progress MR
+3. Clone `pyxis-repo-configs`, append the registry path, push, raise MR, and monitor
 
 ## Usage
 
@@ -51,15 +52,6 @@ onboarding pipeline (which places the YAML in the working directory automaticall
 
 SKILL_DIR is the absolute path of the directory containing this SKILL.md.
 COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
-
-### Early-exit: `--existing-mr-url`
-
-If the skill is invoked with `--existing-mr-url <url>`:
-```
-MR already raised: <url>
-```
-Exit 0 immediately. The orchestrator passes this flag when the MR URL is already recorded in
-`pipeline_state.json`, so no further work is needed.
 
 ---
 
@@ -161,13 +153,11 @@ ERROR in Step 3: No component_onboarding_details.yaml found and no Jira URL prov
   Either provide a Jira URL or run from within the master onboarding pipeline.
 ```
 
-**3d. Fetch Jira issue details** (only when `JIRA_URL` is non-empty and
-`$WORKDIR/component_onboarding_details.json` does not yet exist):
+**3d. Fetch Jira issue details** (skip if `$WORKDIR/component_onboarding_details.json` already
+exists; only when `JIRA_URL` is non-empty):
 ```bash
-if [[ -n "$JIRA_URL" && ! -f "$WORKDIR/component_onboarding_details.json" ]]; then
-  cd "$WORKDIR"
-  uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
-fi
+cd "$WORKDIR"
+uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
 ```
 
 On exit 1: display stderr and stop:
@@ -214,7 +204,7 @@ HTTP_STATUS=$(curl -sk -w "%{http_code}" \
   -o "$RHOAI_YAML_TMPFILE")
 ```
 
-**If `HTTP_STATUS != 200`:** warn and skip fast-path (continue to Step 7):
+**If `HTTP_STATUS != 200`:** warn and skip fast-path (continue to Step 6):
 ```
 WARN in Step 5: Could not fetch product-listings/rhoai/rhoai.yaml via GitLab API (HTTP $HTTP_STATUS).
   Ensure VPN is active. Continuing with clone.
@@ -248,7 +238,60 @@ Jira updated (label: product-listing-exists). No MR needed.
 ```
 **Stop with exit 0.**
 
-If `ENTRY_EXISTS=false`: continue to Step 7.
+If `ENTRY_EXISTS=false`: continue to Step 6.
+
+---
+
+## Step 6: Check for Existing Open MR in Jira Comments
+
+Skip this step if `$WORKDIR/component_onboarding_details.json` does not exist.
+
+Extract MR URLs from `$WORKDIR/component_onboarding_details.json`:
+```bash
+EXISTING_MR_URLS=$(jq -r '.fields.comment.comments[].body' \
+  "$WORKDIR/component_onboarding_details.json" 2>/dev/null \
+  | grep -oE 'https://gitlab\.cee\.redhat\.com/[^/[:space:]]+/[^/[:space:]]+/-/merge_requests/[0-9]+' \
+  | sort -u || true)
+```
+
+Search `fields.comment.comments[].body` for GitLab MR URLs matching:
+```
+https://gitlab\.cee\.redhat\.com/[^/\s]+/[^/\s]+/-/merge_requests/\d+
+```
+
+For each URL found, run:
+```bash
+GITLAB_SSL_VERIFY=false uv run --script <COMMON_SCRIPTS_DIR>/monitor_gitlab_mr.py \
+  --mr-url "<found-url>" --check-only
+```
+
+Parse stdout:
+- If `state=opened` and the `title=` line contains `COMPONENT_NAME`:
+  ```bash
+  MR_URL="<found-url>"
+  if [[ -n "$JIRA_URL" ]]; then
+    uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+      --comment "Found existing open GitLab MR for '${COMPONENT_NAME}': ${MR_URL}
+  Resuming monitoring of this MR."
+  fi
+  ```
+  Print: `Found existing open MR: $MR_URL. Skipping MR creation and jumping to monitor.`
+  **Set `MR_URL` and jump directly to Step 11** (Monitor MR).
+
+- If `state=merged`:
+  ```bash
+  if [[ -n "$JIRA_URL" ]]; then
+    uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+      --add-label "product-listing-exists" \
+      --comment "Previously raised MR has been merged: <found-url>
+  The product listing entry '${PRODUCT_LISTING_ENTRY}' has been added."
+  fi
+  ```
+  Print success and **stop with exit 0.**
+
+- If `state=closed`: note it and continue checking other URLs, then continue to Step 7.
+
+If no matching open MR is found, continue to Step 7.
 
 ---
 
@@ -299,12 +342,34 @@ RHOAI_YAML="$CLONE_DIR/product-listings/rhoai/rhoai.yaml"
 if grep -qF "$PRODUCT_LISTING_ENTRY" "$RHOAI_YAML"; then
   echo "'$PRODUCT_LISTING_ENTRY' already present in product-listings/rhoai/rhoai.yaml — skipping edit."
 else
-  python3 "$COMMON_SCRIPTS_DIR/append_yaml_list_entry.py" "$RHOAI_YAML" \
-    --list-key "repositories" \
-    --value "$PRODUCT_LISTING_ENTRY" || {
-    echo "ERROR in Step 8: Could not append entry to product-listings/rhoai/rhoai.yaml. See details above. Aborting."
-    exit 1
-  }
+  python3 -c "
+import sys
+
+with open('$RHOAI_YAML', 'r') as f:
+    lines = f.readlines()
+
+entry_line = '- $PRODUCT_LISTING_ENTRY\n'
+
+# Find the repositories: key and append after the last - entry in that list
+in_repos = False
+last_repo_idx = None
+for i, line in enumerate(lines):
+    if line.strip().startswith('repositories:'):
+        in_repos = True
+    elif in_repos and line.lstrip().startswith('- '):
+        last_repo_idx = i
+    elif in_repos and line.strip() and not line.lstrip().startswith('- ') and not line.strip().startswith('#'):
+        in_repos = False
+
+if last_repo_idx is not None:
+    lines.insert(last_repo_idx + 1, entry_line)
+else:
+    lines.append(entry_line)
+
+with open('$RHOAI_YAML', 'w') as f:
+    f.writelines(lines)
+print('Entry added.')
+"
 
   grep -qF "$PRODUCT_LISTING_ENTRY" "$RHOAI_YAML" || {
     echo "ERROR in Step 8: Verification failed — '$PRODUCT_LISTING_ENTRY' not found after append."
@@ -374,7 +439,7 @@ On success, update Jira (only when `JIRA_URL` is non-empty):
 ```bash
 uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
   --add-label "product-listing-mr-raised" \
-  --comment "[step:product_listing] GitLab MR raised to add '${COMPONENT_NAME}' to the RHOAI product listing.
+  --comment "GitLab MR raised to add '${COMPONENT_NAME}' to the RHOAI product listing.
 
 MR URL: $MR_URL
 
@@ -384,20 +449,115 @@ Registry path: ${PRODUCT_LISTING_ENTRY}
 The product listing entry will be active once the MR is merged."
 ```
 
+> **CRITICAL: Proceed immediately to Step 11.** Do NOT stop here. Step 11 is mandatory
+> follow-through after every successful MR creation.
+
 ---
 
-## Step 11: Report Completion
+## Step 11: Monitor MR
+
+```bash
+RESULT=$(GITLAB_SSL_VERIFY=false uv run --script <COMMON_SCRIPTS_DIR>/monitor_gitlab_mr.py \
+  --mr-url "$MR_URL" \
+  --timeout 60)
+```
+
+The script polls every 60 seconds and writes progress to stderr. Read **stdout** for the result.
+
+**`merged` (exit 0):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --add-label "product-listing-created" \
+    --remove-label "product-listing-mr-raised" \
+    --comment "GitLab MR merged: $MR_URL
+
+The product listing entry '${PRODUCT_LISTING_ENTRY}' has been added to product-listings/rhoai/rhoai.yaml."
+fi
+```
+Print:
+```
+MR merged: $MR_URL
+Product listing entry '$PRODUCT_LISTING_ENTRY' has been added.
+```
+Continue to Step 12.
+
+**`closed` (exit 1):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --add-label "product-listing-mr-closed" \
+    --comment "GitLab MR was closed without merging: $MR_URL
+Please review and re-run /update-rhoai-product-listing <jira-url>."
+fi
+```
+Stop with:
+```
+ERROR in Step 11 (Monitor MR): MR was closed without merging. Check: $MR_URL
+```
+
+**`pipeline_failed` or `pipeline_canceled` (exit 1):**
+
+Attempt automated fix:
+1. Check YAML validity:
+   ```bash
+   python3 -c "import yaml; yaml.safe_load(open('$CLONE_DIR/product-listings/rhoai/rhoai.yaml'))" 2>&1
+   ```
+2. Verify the added entry is present:
+   ```bash
+   grep -qF "$PRODUCT_LISTING_ENTRY" "$CLONE_DIR/product-listings/rhoai/rhoai.yaml" \
+     && echo "Entry present." || echo "WARN: Entry missing — re-apply may be needed."
+   ```
+3. If reapply needed, re-run the python3 append from Step 8 and push a new commit:
+   ```bash
+   bash "$COMMON_SCRIPTS_DIR/git_commit_push.sh" \
+     --clone-dir "$CLONE_DIR" \
+     --files     "product-listings/rhoai/rhoai.yaml" \
+     --message   "Fix product-listings/rhoai/rhoai.yaml for ${COMPONENT_NAME}" \
+     --branch    "$DEST_BRANCH"
+   ```
+   Update Jira:
+   ```bash
+   uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+     --comment "Pipeline failed on MR $MR_URL. Attempted automated fix and pushed update.
+Please review the MR pipeline and re-run if the issue persists."
+   ```
+   **Jump back to Step 11** to re-monitor the updated MR (once).
+4. If the pipeline fails again or the issue is not fixable, update Jira with failure details and stop:
+   ```
+   ERROR in Step 11 (Monitor MR): Pipeline failed after fix attempt. Manual intervention needed.
+   MR: $MR_URL
+   ```
+
+**`timeout` (exit 1):**
+```bash
+if [[ -n "$JIRA_URL" ]]; then
+  uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+    --comment "MR monitoring timed out after 60 minutes: $MR_URL
+The MR is still open. Check it manually and re-run /update-rhoai-product-listing <jira-url>
+when ready — it will detect the open MR and resume monitoring."
+fi
+```
+Print:
+```
+WARNING: MR monitoring timed out after 60 minutes.
+The MR is still open: $MR_URL
+Re-run this skill — it will detect the open MR in Jira comments and resume monitoring.
+```
+Continue to Step 12 (reporting only; no hard stop).
+
+---
+
+## Step 12: Report Completion
 
 Print:
 ```
 Done.
 
   product-listings/rhoai/rhoai.yaml  — ${PRODUCT_LISTING_ENTRY} added
-  GitLab MR                          : $MR_URL
-  Jira                               : ${JIRA_ID:-(none)} — label: product-listing-mr-raised
+  GitLab MR                          : $MR_URL — $RESULT
+  Jira                               : ${JIRA_ID:-(none)} — label: product-listing-created
 ```
-
-Print the MR URL and exit 0.
 
 ---
 
@@ -410,10 +570,14 @@ Print the MR URL and exit 0.
 | `JIRA_USER_EMAIL` not set | 1 | `export JIRA_USER_EMAIL=you@example.com` |
 | `JIRA_API_TOKEN` not set | 1 | `export JIRA_API_TOKEN=your-api-token` |
 | `uv` not installed | 1 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| VPN not active | 5, 7, 10 | Connect to Red Hat VPN then retry |
+| VPN not active | 5, 7, 10, 11 | Connect to Red Hat VPN then retry |
 | No YAML and no Jira URL | 3 | Provide Jira URL or run from master pipeline |
 | YAML attachment missing on Jira | 3b | Run `/create-component-onboarding-jira <jira-url>` first |
 | `component_name` missing | 4 | Fix field in YAML and re-upload to Jira |
 | Product listing entry already exists | 5 | Expected — exits 0; Jira labelled `product-listing-exists` |
+| Open MR already found in Jira comments | 6 | Expected — jumps to Step 11 to monitor |
 | Push fails (shallow update) | 7, 9 | `git fetch --unshallow origin && git push origin "$DEST_BRANCH"` |
 | MR creation fails 3× | 10 | Check GITLAB_TOKEN scopes; ensure VPN active |
+| MR closed without merge | 11 | Review MR manually; re-run skill |
+| Pipeline failed | 11 | Skill attempts auto-fix and retries monitor once |
+| MR monitoring timeout (60 min) | 11 | MR still open; re-run to resume monitoring |
