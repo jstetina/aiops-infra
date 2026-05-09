@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ODH Component Details",
+  "description": "Input parameters for onboarding an ODH/RHOAI component onto the Konflux CI/build platform",
+  "type": "object",
+  "required": ["inputs"],
+  "additionalProperties": false,
+  "properties": {
+    "inputs": {
+      "type": "object",
+      "required": [
+        "product_context",
+        "component_name",
+        "repo_url",
+        "repo_branch",
+        "context_path",
+        "dockerfile_path",
+        "is_operator"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "product_context": {
+          "type": "string",
+          "description": "Target product platform for this component",
+          "enum": ["ODH", "RHOAI"]
+        },
+        "component_name": {
+          "type": "string",
+          "description": "Unique component name starting with 'odh-', using only lowercase letters, numbers, and hyphens",
+          "pattern": "^odh-[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 5
+        },
+        "repo_url": {
+          "type": "string",
+          "description": "Full HTTPS URL of the component's GitHub repository",
+          "format": "uri",
+          "pattern": "^https://github\\.com/.+/.+$"
+        },
+        "repo_branch": {
+          "type": "string",
+          "description": "Branch to build from",
+          "minLength": 1
+        },
+        "context_path": {
+          "type": "string",
+          "description": "Docker build context path relative to the repo root (use ./ for root)",
+          "minLength": 1
+        },
+        "dockerfile_path": {
+          "type": "string",
+          "description": "Path to the Dockerfile relative to the context path",
+          "minLength": 1
+        },
+        "build_type": {
+          "type": "string",
+          "description": "Onboarding target: CI pipeline or Release pipeline (required when product_context is ODH)",
+          "enum": ["CI", "Release"]
+        },
+        "architectures": {
+          "type": "array",
+          "description": "Target CPU architectures to build for (required when product_context is RHOAI)",
+          "items": {
+            "type": "string",
+            "enum": ["x86_64", "arm64", "ppc64le", "s390x"]
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "default": ["x86_64", "arm64"]
+        },
+        "target_rhoai_version": {
+          "type": "string",
+          "description": "Target RHOAI release version in canonical form x.y or x.y-ea-n (required when product_context is RHOAI)",
+          "pattern": "^\\d+\\.\\d+(-ea-\\d+)?$"
+        },
+        "is_operator": {
+          "type": "boolean",
+          "description": "Whether the component is an operator or controller; controls whether operator manifest paths are required"
+        },
+        "operator_manifest_src_path": {
+          "type": "string",
+          "description": "Relative path to component manifests within the git repo (required when is_operator is true)",
+          "minLength": 1
+        },
+        "operator_manifest_dest_path": {
+          "type": "string",
+          "description": "Destination path in the odh-operator container image where manifests are copied (required when is_operator is true)",
+          "minLength": 1
+        },
+        "long_description": {
+          "type": "string",
+          "description": "One or two sentences describing what the component does (required when product_context is RHOAI)",
+          "minLength": 1
+        },
+        "short_description": {
+          "type": "string",
+          "description": "A short noun phrase of a few words summarising the component (required when product_context is RHOAI)",
+          "minLength": 1
+        },
+        "release_category": {
+          "type": "string",
+          "description": "Release maturity category for the component (required when product_context is RHOAI)",
+          "enum": ["Generally Available", "Tech Preview", "Beta"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "product_context": { "const": "ODH" } },
+            "required": ["product_context"]
+          },
+          "then": {
+            "required": ["build_type"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "product_context": { "const": "RHOAI" } },
+            "required": ["product_context"]
+          },
+          "then": {
+            "required": ["architectures", "target_rhoai_version", "long_description", "short_description", "release_category"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "is_operator": { "const": true } },
+            "required": ["is_operator"]
+          },
+          "then": {
+            "required": ["operator_manifest_src_path", "operator_manifest_dest_path"]
+          }
+        }
+      ]
+    }
+  }
+}
