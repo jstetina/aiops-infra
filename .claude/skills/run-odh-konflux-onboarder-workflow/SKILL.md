@@ -49,9 +49,6 @@ listed in the workflow's `components:` options before dispatch.
 
 ## Implementation
 
-SKILL_DIR is the absolute path of the directory containing this SKILL.md.
-COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
-
 ---
 
 ## Step 0: Parse Inputs and Resolve URLs
@@ -59,7 +56,7 @@ COMMON_SCRIPTS_DIR is `<SKILL_DIR>/../common/scripts`.
 Extract the optional `<jira-url>` argument from the invocation.
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/parse_jira_url.sh" "${1:-}")"
+eval "$(bash "scripts/parse_jira_url.sh" "${1:-}")"
 echo "JIRA_URL : ${JIRA_URL:-(not provided)}"
 echo "JIRA_ID  : ${JIRA_ID:-(not provided)}"
 ```
@@ -91,13 +88,13 @@ WORKFLOW_FILE=".github/workflows/odh-konflux-onboarder.yml"
 Check in order. Stop with a remediation message if any check fails.
 
 ```bash
-bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" \
+bash "scripts/check_prerequisites.sh" \
   --env "GITHUB_USER GITHUB_TOKEN" \
   --tools "uv"
 
 # Jira credentials are only required when a Jira URL is given
 if [[ -n "$JIRA_URL" ]]; then
-  bash "$COMMON_SCRIPTS_DIR/check_prerequisites.sh" --env "JIRA_USER_EMAIL JIRA_API_TOKEN"
+  bash "scripts/check_prerequisites.sh" --env "JIRA_USER_EMAIL JIRA_API_TOKEN"
 fi
 ```
 
@@ -106,7 +103,7 @@ fi
 ## Step 2: Set Up Working Directory
 
 ```bash
-eval "$(bash "$COMMON_SCRIPTS_DIR/init_workdir.sh" --jira-url "${JIRA_URL:-}")"
+eval "$(bash "scripts/init_workdir.sh" --jira-url "${JIRA_URL:-}")"
 YAML_PATH="${WORKDIR}/component_onboarding_details.yaml"
 echo "Working directory: $WORKDIR"
 ```
@@ -121,7 +118,7 @@ echo "Working directory: $WORKDIR"
 
 ```bash
 cd "$WORKDIR"
-uv run --script <COMMON_SCRIPTS_DIR>/fetch_jira_details.py "$JIRA_URL"
+uv run --script scripts/fetch_jira_details.py "$JIRA_URL"
 ```
 
 On exit 1: display stderr and stop:
@@ -133,7 +130,7 @@ ERROR in Step 3 (Fetch Jira): Could not fetch Jira issue. See above. Aborting.
 
 ```bash
 cd "$WORKDIR"
-uv run --script <COMMON_SCRIPTS_DIR>/download_jira_attachment.py \
+uv run --script scripts/download_jira_attachment.py \
   "$JIRA_URL" component_onboarding_details.yaml
 ```
 
@@ -150,7 +147,7 @@ PRODUCT_CONTEXT=$(grep -m1 'product_context:' "$YAML_PATH" | awk '{print $2}')
 REPO_URL=$(grep -m1 'repo_url:' "$YAML_PATH" | awk '{print $2}')
 PR_TARGET_BRANCH=$(grep -m1 'repo_branch:' "$YAML_PATH" | awk '{print $2}')
 BUILD_TYPE=$(grep -m1 'build_type:' "$YAML_PATH" | awk '{print $2}' 2>/dev/null || echo "")
-VERSION=$(grep -m1 'output_image_tag:' "$YAML_PATH" | awk '{print $2}' 2>/dev/null || echo "")
+VERSION=$(grep -m1 'odh_release_tag:' "$YAML_PATH" | awk '{print $2}' 2>/dev/null || echo "")
 ```
 
 The extracted values correspond to the following inputs:
@@ -161,7 +158,7 @@ The extracted values correspond to the following inputs:
 | `REPO_URL` | `inputs.repo_url` | Full HTTPS URL |
 | `PR_TARGET_BRANCH` | `inputs.repo_branch` | Branch to build against |
 | `BUILD_TYPE` | `inputs.build_type` | `CI` or `Release` |
-| `VERSION` | `inputs.output_image_tag` | Only for Release builds |
+| `VERSION` | `inputs.odh_release_tag` | Only for Release builds |
 
 If a `component_onboarding_details.yaml` already exists in `$WORKDIR` (JIRA_URL is
 empty), use it and announce:
@@ -193,8 +190,8 @@ fi
 
 If `BUILD_TYPE == Release` and `VERSION` is empty, stop with:
 ```
-ERROR in Step 3: build_type is Release but 'inputs.output_image_tag' is missing from
-  component_onboarding_details.yaml. Add 'output_image_tag: <version>' under inputs: and re-run.
+ERROR in Step 3: build_type is Release but 'inputs.odh_release_tag' is missing from
+  component_onboarding_details.yaml. Add 'odh_release_tag: <version>' under inputs: and re-run.
 ```
 
 If any required field (`PRODUCT_CONTEXT`, `REPO_URL`, `PR_TARGET_BRANCH`, `BUILD_TYPE`)
@@ -234,8 +231,8 @@ invalid input with an explanation.
 
 → Store in `BUILD_TYPE`. Must be exactly `CI` or `Release`.
 
-**B5 — Version (Release only)**
-> What is the version string for this release build? (e.g. 2.21.0)
+**B5 — Version / release tag (Release only)**
+> What is the release tag for this build? (e.g. 2.21.0)
 
 → Only asked when `BUILD_TYPE == Release`. Store in `VERSION`. Must be non-empty.
 
@@ -297,7 +294,7 @@ https://github\.com/[^/\s]+/[^/\s]+/pull/\d+
 
 For each URL found, run:
 ```bash
-uv run --script <COMMON_SCRIPTS_DIR>/monitor_github_pr.py \
+uv run --script scripts/monitor_github_pr.py \
   --pr-url <found-url> --check-only
 ```
 
@@ -333,7 +330,7 @@ if [[ "$BUILD_TYPE" == "Release" ]]; then
   TRIGGER_INPUTS+=("--input" "version=${VERSION}")
 fi
 
-RUN_ID=$(uv run --script <COMMON_SCRIPTS_DIR>/run_github_workflow.py trigger \
+RUN_ID=$(uv run --script scripts/run_github_workflow.py trigger \
   --repo-url "$OKC_URL" \
   --workflow "$WORKFLOW_FILE" \
   --ref "$OKC_REF" \
@@ -367,7 +364,7 @@ Workflow run triggered.
 
 Post an interim Jira comment if `JIRA_URL` is non-empty:
 ```bash
-uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+uv run --script scripts/update_jira_issue.py "$JIRA_URL" \
   --comment "odh-konflux-onboarder workflow triggered (Run #${RUN_ID}).
 
 Component       : $COMPONENT
@@ -383,7 +380,7 @@ Workflow run: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}"
 ## Step 7: Monitor Workflow (30 minutes max)
 
 ```bash
-MONITOR_OUTPUT=$(uv run --script <COMMON_SCRIPTS_DIR>/run_github_workflow.py monitor \
+MONITOR_OUTPUT=$(uv run --script scripts/run_github_workflow.py monitor \
   --repo-url "$OKC_URL" \
   --run-id "$RUN_ID" \
   --timeout 30 \
@@ -402,7 +399,7 @@ Continue to Step 8.
 
 Attempt automated diagnosis — fetch the failure logs:
 ```bash
-FAILURE_LOGS=$(uv run --script <COMMON_SCRIPTS_DIR>/run_github_workflow.py get-step-logs \
+FAILURE_LOGS=$(uv run --script scripts/run_github_workflow.py get-step-logs \
   --repo-url "$OKC_URL" \
   --run-id "$RUN_ID" \
   --step "Run onboarder" 2>/dev/null) || true
@@ -432,7 +429,7 @@ Would you like to re-trigger the workflow with the same inputs? (yes / no)
 
 If `JIRA_URL` non-empty, update Jira on failure (before stopping):
 ```bash
-uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+uv run --script scripts/update_jira_issue.py "$JIRA_URL" \
   --comment "odh-konflux-onboarder workflow run #${RUN_ID} FAILED.
 
 Run URL: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
@@ -456,7 +453,7 @@ the option to skip triggering and jump directly to PR monitoring.
 ```
 If `JIRA_URL` non-empty, post a Jira comment before stopping:
 ```bash
-uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+uv run --script scripts/update_jira_issue.py "$JIRA_URL" \
   --comment "odh-konflux-onboarder workflow run #${RUN_ID} monitoring timed out after 30 minutes.
 
 The run may still be completing. Run URL: https://github.com/${OKC_PATH}/actions/runs/${RUN_ID}
@@ -471,7 +468,7 @@ Re-run /run-odh-konflux-onboarder-workflow — it will detect the existing PR an
 Fetch the logs of the "Create pull request" step:
 
 ```bash
-STEP_LOGS=$(uv run --script <COMMON_SCRIPTS_DIR>/run_github_workflow.py get-step-logs \
+STEP_LOGS=$(uv run --script scripts/run_github_workflow.py get-step-logs \
   --repo-url "$OKC_URL" \
   --run-id "$RUN_ID" \
   --step "Create pull request" 2>/dev/null)
@@ -523,7 +520,7 @@ Tekton PR URL: $TEKTON_PR_URL
 **Skip this step if `JIRA_URL` is empty.**
 
 ```bash
-uv run --script <COMMON_SCRIPTS_DIR>/update_jira_issue.py "$JIRA_URL" \
+uv run --script scripts/update_jira_issue.py "$JIRA_URL" \
   --add-label "tekton-pr-raised" \
   --comment "odh-konflux-onboarder workflow completed successfully.
 
@@ -573,7 +570,7 @@ Tekton PR raised. Re-run the parent orchestrator after the PR merges to advance 
 | Invalid Jira URL format | 0 | Check URL contains `/browse/` |
 | YAML attachment missing from Jira | 3A | Attach `component_onboarding_details.yaml` to the issue |
 | Unknown `build_type` in YAML | 3A | Set to `CI` or `Release` in the YAML |
-| `output_image_tag` missing for Release | 3A | Add `output_image_tag: <version>` under `inputs:` in YAML |
+| `odh_release_tag` missing for Release | 3A | Add `odh_release_tag: <version>` under `inputs:` in YAML |
 | `PRODUCT_CONTEXT == RHOAI` | 3 | Wrong skill — RHOAI uses a different onboarding process |
 | Dispatch 422 (inputs rejected) | 6 | Step 4 PR not merged yet — component not in workflow options list |
 | Dispatch 403 (permission denied) | 6 | Regenerate GITHUB_TOKEN with `actions:write` scope |
