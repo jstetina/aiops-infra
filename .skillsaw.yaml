@@ -9,8 +9,8 @@ rules:
     severity: warning
     limits:
       skill:
-        warn: 4000
-        error: 8000
+        warn: 7000
+        error: 10000
 
   content-critical-position:
     enabled: true
