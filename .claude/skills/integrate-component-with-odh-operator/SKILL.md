@@ -173,9 +173,15 @@ Never hardcode a URL — always use `$ODH_OPERATOR_URL` and `$ODH_OPERATOR_PATH`
 **3e. Resolve `OPERATOR_TARGET_BRANCH`:**
 
 Set the target branch for cloning and raising PRs based on product context:
+- **ODH** — targets `main`
+- **RHOAI** — targets `$REPO_BRANCH` (the component's branch from the onboarding YAML, e.g. `rhoai-2.20`)
 
 ```bash
-OPERATOR_TARGET_BRANCH="main"
+if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
+  OPERATOR_TARGET_BRANCH="$REPO_BRANCH"
+else
+  OPERATOR_TARGET_BRANCH="main"
+fi
 echo "OPERATOR_TARGET_BRANCH: $OPERATOR_TARGET_BRANCH"
 ```
 
