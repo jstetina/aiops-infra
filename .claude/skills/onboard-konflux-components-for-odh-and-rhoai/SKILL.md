@@ -5,13 +5,9 @@ allowed-tools: Bash
 user-invocable: true
 ---
 
-> **WARNING:** This skill is designed to be invoked as part of the
-> `create-component-onboarding-jira` skill.
-> Running it standalone will render onboarding incomplete (e.g. missing Jira
-> metadata, labels, and YAML attachment that upstream steps provide).
-> Only run `onboard-konflux-components-for-odh-and-rhoai` directly if you know
-> what you are doing.
->
+> **WARNING:** This skill is not designed to be invoked manually from your playpen
+> Only run `onboard-konflux-components-for-odh-and-rhoai` directly if you know what you are doing.
+
 > **Ask the user to confirm before proceeding.**
 
 # Onboard Konflux Components for ODH and RHOAI
