@@ -5,7 +5,7 @@ allowed-tools: Bash
 user-invocable: true
 ---
 
-> **WARNING:** This skill is not designed to be invoked manually from your playpen
+> **WARNING:** This skill is not designed to be invoked manually from user playpen
 > Only run `onboard-konflux-components-for-odh-and-rhoai` directly if you know what you are doing.
 
 > **Ask the user to confirm before proceeding.**
