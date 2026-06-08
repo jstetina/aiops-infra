@@ -24,6 +24,9 @@
 
 set -euo pipefail
 
+# Skip SSL verification for internal GitLab instances with self-signed certs
+export GIT_SSL_NO_VERIFY=true
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 info()  { echo "[INFO]  $*" >&2; }
 warn()  { echo "[WARN]  $*" >&2; }

@@ -51,6 +51,11 @@ Optional overrides: `APP_INTERFACE_REPO_URL`, `KONFLUX_RELEASE_DATA_REPO_URL`,
 
 **VPN must be active** before running — required for Steps 3, 4, and 10 (GitLab on gitlab.cee.redhat.com).
 
+**GitLab SSL note:** `gitlab.cee.redhat.com` uses an internal CA. All scripts pass
+`GIT_SSL_NO_VERIFY=true` and `GITLAB_SSL_VERIFY=false` automatically. Do NOT diagnose
+GitLab failures as "VPN down" just because `curl gitlab.cee.redhat.com` returns 000 without
+`-k` — that is an SSL issue, not a VPN issue. VPN state is not your responsibility to check.
+
 ## Implementation
 
 ---
