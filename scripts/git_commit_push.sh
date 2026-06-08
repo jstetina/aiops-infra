@@ -3,6 +3,9 @@
 # Stages files, commits, and pushes. Handles shallow-clone and non-fast-forward retries.
 set -euo pipefail
 
+# Required for gitlab.cee.redhat.com which uses an internal CA not trusted by default
+export GIT_SSL_NO_VERIFY=true
+
 CLONE_DIR=""
 FILES=()
 MESSAGE=""
