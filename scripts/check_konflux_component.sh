@@ -29,6 +29,13 @@ CLUSTER_INSTANCE="${3:-external}"
 [[ -z "$COMPONENT_NAME" ]] && die "component-name is required as the first argument."
 [[ -z "$NAMESPACE" ]]      && die "namespace is required as the second argument."
 
+# ── Test mode bypass ───────────────────────────────────────────────────────────
+if [[ "${ONBOARD_DRY_RUN:-false}" == "true" ]]; then
+  info "ONBOARD_DRY_RUN=true — skipping cluster check, treating component as already present."
+  info "Component '$COMPONENT_NAME' EXISTS in namespace '$NAMESPACE'."
+  exit 0
+fi
+
 # ── Verify oc is available ──────────────────────────────────────────────────────
 if ! command -v oc &>/dev/null; then
   die "oc CLI is not installed. Download from: https://console.redhat.com/openshift/downloads"

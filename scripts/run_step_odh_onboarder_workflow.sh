@@ -43,6 +43,18 @@ if [[ -n "$EXISTING_URL" ]]; then
   exit 0
 fi
 
+# Dry-run bypass — workflow requires GitHub App secrets unavailable on forks
+if [[ "${ONBOARD_DRY_RUN:-false}" == "true" ]]; then
+  echo "ONBOARD_DRY_RUN=true — skipping onboarder workflow trigger, marking onboarder_workflow as done."
+  uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --add-label "tekton-pr-raised" \
+    --comment "[step:onboarder_workflow] Skipped (ONBOARD_DRY_RUN=true). ODH onboarder workflow not triggered." || true
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step onboarder_workflow \
+    --status done
+  exit 0
+fi
+
 YAML_FILE="$WORKDIR/component_onboarding_details.yaml"
 [[ ! -f "$YAML_FILE" ]] && { echo "ERROR: $YAML_FILE not found" >&2; exit 1; }
 

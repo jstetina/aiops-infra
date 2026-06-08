@@ -44,6 +44,18 @@ if [[ "$CURRENT_STATUS" == "done" ]]; then
   exit 0
 fi
 
+# Dry-run bypass — workflow requires GitHub App secrets unavailable on forks
+if [[ "${ONBOARD_DRY_RUN:-false}" == "true" ]]; then
+  echo "ONBOARD_DRY_RUN=true — skipping workflow trigger, marking renovate_sync as done."
+  uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --add-label   "renovate-sync-done" \
+    --remove-label "renovate-sync-triggered" \
+    --comment "[step:renovate_sync] Skipped (ONBOARD_DRY_RUN=true). Renovate sync workflow not triggered." || true
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step renovate_sync --status done
+  exit 0
+fi
+
 RKC_URL="${RHOAI_KONFLUX_CENTRAL_REPO_URL:-https://github.com/red-hat-data-services/konflux-central.git}"
 RKC_PATH=$(echo "$RKC_URL" | sed 's|https://github.com/||;s|\.git$||')
 WORKFLOW_FILE=".github/workflows/sync-renovate-configs.yml"
