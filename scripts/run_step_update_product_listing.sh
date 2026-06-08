@@ -100,7 +100,7 @@ if grep -qF "$PRODUCT_LISTING_ENTRY" "$RHOAI_YAML" 2>/dev/null; then
   echo "Entry already present in YAML — skipping append."
 else
   uv run --script "$SCRIPTS_DIR/append_yaml_list_entry.py" "$RHOAI_YAML" \
-    --key  "repositories" \
+    --list-key "repositories" \
     --value "$PRODUCT_LISTING_ENTRY" || {
     echo "ERROR: Could not append to product-listings/rhoai/rhoai.yaml." >&2; exit 1
   }
