@@ -55,10 +55,29 @@ Optional overrides: `APP_INTERFACE_REPO_URL`, `KONFLUX_RELEASE_DATA_REPO_URL`,
 
 ---
 
+## Locate Scripts Directory
+
+Before any other step, resolve the absolute path to the `scripts/` directory.
+All subsequent bash calls must use `$SCRIPTS_DIR/` — never bare relative paths.
+
+```bash
+# AIOPS_INFRA_DIR is set by CI (setup-skills.sh) and locally via exports.sh.
+# Fall back to /tmp/aiops-infra which is the standard CI clone location.
+SCRIPTS_DIR="${AIOPS_INFRA_DIR:-/tmp/aiops-infra}/scripts"
+if [[ ! -d "$SCRIPTS_DIR" ]]; then
+  echo "ERROR: scripts directory not found at $SCRIPTS_DIR"
+  echo "  Set AIOPS_INFRA_DIR to the root of the aiops-infra checkout."
+  exit 1
+fi
+echo "SCRIPTS_DIR: $SCRIPTS_DIR"
+```
+
+---
+
 ## Step 0: Parse Inputs
 
 ```bash
-eval "$(bash "scripts/parse_jira_url.sh" "${1:-}")"
+eval "$(bash "$SCRIPTS_DIR/parse_jira_url.sh" "${1:-}")"
 [[ -z "$JIRA_URL" ]] && {
   echo "ERROR: Jira URL is required."
   echo "  Usage: /onboard-konflux-components-for-odh-and-rhoai <jira-url>"
@@ -73,7 +92,7 @@ echo "Jira URL : $JIRA_URL"
 ## Step 1: Check Prerequisites
 
 ```bash
-bash "scripts/check_prerequisites.sh" \
+bash "$SCRIPTS_DIR/check_prerequisites.sh" \
   --env "JIRA_USER_EMAIL JIRA_API_TOKEN GITLAB_USER GITLAB_TOKEN GITHUB_USER GITHUB_TOKEN" \
   --tools "uv git oc skopeo yamllint jq kustomize"
 
@@ -85,7 +104,7 @@ bash "scripts/check_prerequisites.sh" \
 ## Step 2: Set Up Working Directory and Initialize State
 
 ```bash
-eval "$(bash "scripts/init_pipeline.sh" --jira-url "$JIRA_URL")"
+eval "$(bash "$SCRIPTS_DIR/init_pipeline.sh" --jira-url "$JIRA_URL")"
 echo "Working directory: $WORKDIR"
 echo "Pipeline state: $PIPELINE_STATE"
 ```
@@ -99,14 +118,25 @@ echo "Pipeline state: $PIPELINE_STATE"
 
 **Skip if** `steps.validate.status == "done"` in `pipeline_state.json`.
 
-Follow the `validate-component-onboarding-jira` child skill's implementation exactly.
+> **There is NO `run_step_validate.sh` wrapper for this step.** Do NOT attempt to call one.
+> This step uses the full `validate-component-onboarding-jira` child skill with LLM reasoning.
+
+Invoke the validate skill directly:
+
+```bash
+# Read the validate-component-onboarding-jira skill and follow its implementation.
+# The skill is at: ~/.claude/skills/validate-component-onboarding-jira/SKILL.md
+# Pass SCRIPTS_DIR so it resolves script paths correctly.
+export SCRIPTS_DIR="$SCRIPTS_DIR"
+# Then follow every step in the validate skill for: $JIRA_URL
+```
 
 On success:
 - `$WORKDIR/component_onboarding_details.json` and `$WORKDIR/component_onboarding_details.yaml` exist
 - Jira is in "In Progress" status
 - Update pipeline state:
   ```bash
-  bash "scripts/pipeline_state.sh" set \
+  bash "$SCRIPTS_DIR/pipeline_state.sh" set \
     --state "$PIPELINE_STATE" --step validate --field status --value "done"
   ```
 
@@ -119,10 +149,10 @@ On failure: **hard blocker**. Display the child skill's error and stop.
 **Skip computation if** `component_name` is already non-empty in `pipeline_state.json`, but still read variables from the YAML into shell for use in later steps.
 
 ```bash
-eval "$(bash "scripts/parse_component_details.sh" \
+eval "$(bash "$SCRIPTS_DIR/parse_component_details.sh" \
   --workdir        "$WORKDIR" \
   --jira-id        "$JIRA_ID" \
-  --scripts-dir    "scripts" \
+  --scripts-dir    "$SCRIPTS_DIR" \
   --pipeline-state "$PIPELINE_STATE")"
 # Sets: COMPONENT_NAME IS_OPERATOR REPO_URL REPO_BRANCH
 #       PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI
@@ -132,7 +162,7 @@ After parsing, update the state schema for any steps not yet in the file
 (handles old state files missing new steps):
 
 ```bash
-bash "scripts/init_pipeline.sh" \
+bash "$SCRIPTS_DIR/init_pipeline.sh" \
   --jira-url         "$JIRA_URL" \
   --workdir-override "$WORKDIR" \
   --product-context  "$PRODUCT_CONTEXT" \
@@ -154,7 +184,7 @@ Reconstruct `pipeline_state.json` from Jira labels (durable even after a fresh c
 and extract any PR/MR URLs from Jira comments that aren't already in state:
 
 ```bash
-uv run --script "scripts/sync_state_from_jira.py" \
+uv run --script "$SCRIPTS_DIR/sync_state_from_jira.py" \
   --jira-details   "$WORKDIR/component_onboarding_details.json" \
   --pipeline-state "$PIPELINE_STATE"
 ```
@@ -169,9 +199,9 @@ For all steps in `pr_raised` or `mr_raised` state, query the GitHub/GitLab API
 (one call per step, `--check-only` mode) and update `pipeline_state.json`:
 
 ```bash
-NEWLY_MERGED=$(bash "scripts/check_pr_mr_status.sh" \
+NEWLY_MERGED=$(bash "$SCRIPTS_DIR/check_pr_mr_status.sh" \
   --state      "$PIPELINE_STATE" \
-  --scripts-dir "scripts")
+  --scripts-dir "$SCRIPTS_DIR")
 ```
 
 `NEWLY_MERGED` is a newline-separated list of step keys that transitioned to `"merged"`
@@ -187,7 +217,7 @@ for MERGED_KEY in $NEWLY_MERGED; do
   [[ -n "$DONE_LABEL" ]]   && LABEL_ARGS="$LABEL_ARGS --add-label $DONE_LABEL"
   [[ -n "$RAISED_LABEL" ]] && LABEL_ARGS="$LABEL_ARGS --remove-label $RAISED_LABEL"
   if [[ -n "$LABEL_ARGS" ]]; then
-    uv run --script "scripts/update_jira_issue.py" "$JIRA_URL" \
+    uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
       $LABEL_ARGS || true
   fi
 done
@@ -220,160 +250,180 @@ UNBLOCKED_STEPS=$(jq -r '
 
 ## Step 8: Execute Pending Unblocked Steps
 
-For each step in `UNBLOCKED_STEPS`, follow the corresponding child skill's implementation
-through to and including the PR/MR creation step only (do NOT call any blocking monitor).
-After the PR/MR URL is captured, record it in `pipeline_state.json` and add the `label_raised`
-label to Jira.
+For each step in `UNBLOCKED_STEPS`, call the corresponding wrapper script. The script
+encodes all multi-step logic (fork, clone, edit YAML, commit, raise PR/MR, update Jira)
+and updates `pipeline_state.json` atomically before exiting.
 
-**General pattern for each child skill invocation:**
+**General invocation contract** (identical for every step):
 
 ```bash
-# 1. If pr_url/mr_url already set in pipeline_state.json, step is already "pr_raised" — skip
-URL_FIELD=$(jq -r ".steps.${STEP_KEY}.pr_url // .steps.${STEP_KEY}.mr_url // \"\"" "$PIPELINE_STATE")
-if [[ -n "$URL_FIELD" ]]; then
-  echo "[orchestrator] $STEP_KEY already has URL $URL_FIELD — skipping PR raise"
-  continue
-fi
-
-# 2. Invoke child skill's implementation (raises PR, captures URL)
-# 3. Record result:
-TMP=$(mktemp); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-jq --arg k "$STEP_KEY" --arg u "$PR_URL" --arg s "pr_raised" --arg ts "$NOW" \
-  '.steps[$k].pr_url = $u | .steps[$k].status = $s | .last_status_change_at = $ts' \
-  "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
-
-# 4. Add label_raised to Jira
-LABEL_RAISED=$(jq -r ".steps.${STEP_KEY}.label_raised // \"\"" "$PIPELINE_STATE")
-[[ -n "$LABEL_RAISED" ]] && uv run --script "scripts/update_jira_issue.py" \
-  "$JIRA_URL" --add-label "$LABEL_RAISED" || true
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_<name>.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+# Exit 0: script wrote pipeline_state.json (status pr_raised/mr_raised, URL, label).
+#         Extract URL from last line of $OUTPUT for logging. Set NEW_PRS_RAISED="true".
+# Exit 2: step was idempotent (already done). Script wrote pipeline_state.json (status done).
+#         Nothing further needed.
+# Exit 1: hard failure. Print $OUTPUT and stop this run.
+#         pipeline_state.json is unchanged; next CI run retries.
 ```
+
+**CRITICAL — Exit 1 handling: do NOT read, debug, or edit any script.**
+On exit 1, print the output, post a Jira comment (see Step 9), and terminate the session.
+The wrapper scripts are self-contained; failures are environment or infrastructure issues,
+not LLM reasoning tasks. Editing scripts mid-run is strictly forbidden.
+
+Note: `WORKDIR` and `PIPELINE_STATE` must be forwarded explicitly because the Bash tool
+preserves CWD across calls (a `cd "$WORKDIR"` earlier in the session would cause the script
+to double-nest the Jira ID when computing its own default WORKDIR).
+
+Track whether any PR/MR was raised this run:
+```bash
+NEW_PRS_RAISED="false"
+```
+Set `NEW_PRS_RAISED="true"` inside each Exit-0 and Exit-0-equivalent handler below.
 
 ### Step 8a: create-quay-repo (step key: `quay`)
 
 **Execute if** `quay` is in `UNBLOCKED_STEPS`.
 
-Follow `create-quay-repo` through **Step 9** (Raise MR). Capture `$MR_URL`.
-Record in `pipeline_state.json`: `steps.quay.mr_url = "$MR_URL"`, `status = "mr_raised"`.
-Add label `quay-mr-raised` to Jira.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_create_quay_repo.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-If child exits because Quay repo already exists (Step 3 of child):
-set `steps.quay.status = "done"` and add label `quay-mr-merged`.
-
-**Pass `--existing-mr-url`** if `steps.quay.mr_url` is already set — child will skip straight to returning the URL.
+- Exit 0: the script has already updated `pipeline_state.json` (status `mr_raised`, MR URL recorded, label `quay-mr-raised` added). Extract `MR_URL` from the last line of `$OUTPUT` for logging. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: the script has already updated `pipeline_state.json` (status `done`, label `quay-mr-merged` added). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop. `pipeline_state.json` is unchanged; next CI run retries.
 
 ### Step 8b: create-rhoai-delivery-repo (step key: `delivery_repo`, RHOAI only)
 
 **Execute if** `delivery_repo` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
-> **VPN must be active. Runs before `krd` — for RHOAI, `krd` has `depends_on: ["delivery_repo"]`,
-> so this MR must merge before `krd` is unblocked.**
+> **VPN must be active.**
 
-Follow `create-rhoai-delivery-repo` through **Step 10** (Raise MR). Capture `$MR_URL`.
-Record: `steps.delivery_repo.mr_url = "$MR_URL"`, `status = "mr_raised"`. Add label `delivery-repo-mr-raised`.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_create_rhoai_delivery_repo.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-If delivery repo already exists (child Step 5 exits 0): set `status = "done"`, add label `delivery-repo-exists`.
-
-When this MR merges, Step 6 (`check_pr_mr_status.sh`) transitions `delivery_repo` to `"merged"` and
-adds label `delivery-repo-mr-merged`. Step 7 then unblocks `krd` on the next re-run.
+- Exit 0: script updated `pipeline_state.json` (status `mr_raised`, MR URL recorded, label `delivery-repo-mr-raised` added). Extract `MR_URL` from last line of `$OUTPUT` for logging. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: delivery repo already exists. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8c: onboard-component-to-konflux-release-data (step key: `krd`)
 
 **Execute if** `krd` is in `UNBLOCKED_STEPS`.
 
 > **VPN must be active.**
-> **For both products:** `depends_on` includes `"quay"`, so the Quay MR must merge before krd is unblocked.
-> **For RHOAI:** `depends_on` also includes `"delivery_repo"`, so both quay and delivery-repo must merge first.
 
-Follow `onboard-component-to-konflux-release-data` through **Step 9** (Raise MR). Capture `$MR_URL`.
-Record: `steps.krd.mr_url = "$MR_URL"`, `status = "mr_raised"`.
-Add label `krd-mr-raised` to Jira.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_krd.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-If child exits because component already exists: set `status = "done"`, add label `krd-mr-merged`.
+- Exit 0: script updated `pipeline_state.json` (status `mr_raised`, MR URL recorded, label `krd-mr-raised` added). Extract `MR_URL` from last line of `$OUTPUT` for logging. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: component already exists on cluster. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8d: add-component-to-*-konflux-central (step key: `okc`)
 
 **Execute if** `okc` is in `UNBLOCKED_STEPS`.
 
-> **For RHOAI:** `depends_on: ["krd"]` — the krd MR must merge before okc is unblocked.
-> For ODH, there is no dependency — okc runs in parallel with other early steps.
+**If `PRODUCT_CONTEXT == "ODH"`:**
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_add_to_odh_okc.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-**If `PRODUCT_CONTEXT == "ODH"`:** follow `add-component-to-odh-konflux-central` through PR raise.
-Record: `steps.okc.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `okc-pr-raised`.
+**If `PRODUCT_CONTEXT == "RHOAI"`:**
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_add_to_rhoai_okc.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-**If `PRODUCT_CONTEXT == "RHOAI"`:** follow `add-component-to-rhoai-konflux-central` through
-**Step 10** (Raise PR). The child derives `$BRANCH_NAME` from `target_rhoai_version` in Step 3f —
-allow this derivation to proceed.
-Record: `steps.okc.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `rkc-pr-raised`.
-
-If child exits because PipelineRun already exists: set `status = "done"`.
+- Exit 0: script updated `pipeline_state.json` (status `pr_raised`, PR URL recorded, label added). Extract `PR_URL` from last line of `$OUTPUT`. Set `NEW_PRS_RAISED="true"`.
+- Exit 2: PipelineRun already exists. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8e: create-pull-pipelines-in-rhoai-konflux-central (step key: `pull_pipelines`, RHOAI only)
 
 **Execute if** `pull_pipelines` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
-> `depends_on: ["krd"]` — the krd MR must merge before pull_pipelines is unblocked.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_create_pull_pipelines.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-Follow `create-pull-pipelines-in-rhoai-konflux-central` through **Step 10** (Raise PR). Capture `$PULL_PR_URL`.
-Record: `steps.pull_pipelines.pr_url = "$PULL_PR_URL"`, `status = "pr_raised"`. Add label `rkc-pull-pr-raised`.
-
-If PipelineRun already exists: set `status = "done"`.
+- Exit 0: script updated `pipeline_state.json` (status `pr_raised`, PR URL recorded, label `rkc-pull-pr-raised` added). Set `NEW_PRS_RAISED="true"`.
+- Exit 2: PipelineRun already exists. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8f: integrate-component-with-bundle (step key: `bundle`)
 
 **Execute if** `bundle` is in `UNBLOCKED_STEPS`.
 
-> **For ODH:** `depends_on: ["onboarder_workflow"]` — onboarder_workflow must complete before bundle.
-> **For RHOAI:** `depends_on: ["okc"]` — okc must merge before bundle is unblocked.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_integrate_bundle.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-Follow `integrate-component-with-bundle` through **Step 10** (Raise PR). Capture `$PR_URL`.
-Record: `steps.bundle.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `bundle-pr-raised`.
+- Exit 0: script updated `pipeline_state.json` (status `pr_raised`, PR URL recorded, label `bundle-pr-raised` added). Set `NEW_PRS_RAISED="true"`.
+- Exit 2: entry already present. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8g: integrate-component-with-odh-operator (step key: `operator`)
 
 **Execute if** `operator` is in `UNBLOCKED_STEPS`.
 
-> `depends_on: ["bundle"]` — the bundle PR must merge (or be marked done) before operator is unblocked.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_integrate_operator.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-> **CRITICAL**: The operator repo URL **must** be resolved by `resolve_operator_url.sh`
-> in the child skill's Step 3d. If `ODH_OPERATOR_REPO_URL` is set in the environment,
-> the script will use it as an override. **Never hardcode** `ODH_OPERATOR_URL` — always
-> let the script resolve it.
-
-If `IS_OPERATOR == false`: child exits at Step 4a — set `status = "skipped"`.
-
-If `IS_OPERATOR == true`: follow through to Step 9 (Raise PR). Capture `$PR_URL`.
-Record: `steps.operator.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `operator-pr-raised`.
-
-**Pass `--existing-pr-url`** if `steps.operator.pr_url` is already set — child will skip straight to returning the URL.
+- Exit 0: script updated `pipeline_state.json` (status `pr_raised`, PR URL recorded, label `operator-pr-raised` added). Set `NEW_PRS_RAISED="true"`.
+- Exit 2: `is_operator=false` (skipped) or entry already present. Script updated `pipeline_state.json`. Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8h: update-rhoai-product-listing (step key: `product_listing`, RHOAI only)
 
 **Execute if** `product_listing` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
-> **VPN must be active. Only runs after `delivery_repo` status == "merged" or "done".**
+> **VPN must be active.**
 
-Follow `update-rhoai-product-listing` through the MR raise step. Capture `$MR_URL`.
-Record: `steps.product_listing.mr_url = "$MR_URL"`, `status = "mr_raised"`. Add label `product-listing-mr-raised`.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_update_product_listing.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-If entry already exists: set `status = "done"`, add label `product-listing-exists`.
+- Exit 0: script updated `pipeline_state.json` (status `mr_raised`, MR URL recorded, label `product-listing-mr-raised` added). Set `NEW_PRS_RAISED="true"`.
+- Exit 2: entry already exists. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8i: setup-auto-merge (step key: `auto_merge`, RHOAI only)
 
 **Execute if** `auto_merge` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
-Follow `setup-auto-merge` through **Step 9** (Raise PR). Capture `$PR_URL`.
-Record: `steps.auto_merge.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `auto-merge-pr-raised`.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_setup_auto_merge.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-If entries already exist: set `status = "done"`.
+- Exit 0: script updated `pipeline_state.json` (status `pr_raised`, PR URL recorded, label `auto-merge-pr-raised` added). Set `NEW_PRS_RAISED="true"`.
+- Exit 2: entries already exist. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ### Step 8j: enable-renovate-on-rhoai-component-repo (step key: `renovate`, RHOAI only)
 
 **Execute if** `renovate` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
-Follow `enable-renovate-on-rhoai-component-repo` through **Step 9** (Raise PR). Capture `$PR_URL`.
-Record: `steps.renovate.pr_url = "$PR_URL"`, `status = "pr_raised"`. Add label `renovate-pr-raised`.
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_enable_renovate.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
 
-If entry already exists: set `status = "done"`.
+- Exit 0: script updated `pipeline_state.json` (status `pr_raised`, PR URL recorded, label `renovate-pr-raised` added). Set `NEW_PRS_RAISED="true"`.
+- Exit 2: entry already exists. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
+- Exit 1: hard failure. Print `$OUTPUT` and stop.
 
 ---
 
@@ -389,20 +439,13 @@ completes with no URL and is marked `done` immediately.
 
 The `depends_on: ["krd", "okc"]` check in Step 7 ensures both are merged before this runs.
 
-Follow `run-odh-konflux-onboarder-workflow` through **Step 9** (Update Jira with PR URL).
-Capture `$TEKTON_PR_URL` from Step 8. On success:
 ```bash
-TMP=$(mktemp); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-jq --arg u "$TEKTON_PR_URL" --arg s "pr_raised" --arg ts "$NOW" \
-  '.steps.onboarder_workflow.pr_url = $u | .steps.onboarder_workflow.status = $s | .last_status_change_at = $ts' \
-  "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
-NEW_PRS_RAISED="true"
-uv run --script "scripts/update_jira_issue.py" "$JIRA_URL" \
-  --add-label "tekton-pr-raised" || true
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_odh_onboarder_workflow.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
 ```
 
-(`check_pr_mr_status.sh` in Step 6 will detect the merge on the next re-run and
-advance the status. The `tekton-pr-merged` label will be added when merged.)
+- Exit 0: the script has already updated `pipeline_state.json` (status `pr_raised`, Tekton PR URL recorded, label `tekton-pr-raised` added). Extract `PR_URL` from last line of `$OUTPUT`. Set `NEW_PRS_RAISED="true"`.
+- Exit 1: hard failure (workflow dispatch failed, 422, or timeout). Print `$OUTPUT` and stop.
 
 ### Step 9b: sync-rhoai-renovate-configs (step key: `renovate_sync`, RHOAI only)
 
@@ -411,21 +454,12 @@ advance the status. The `tekton-pr-merged` label will be added when merged.)
 The `depends_on: ["renovate"]` check in Step 7 ensures renovate PR is merged before this runs.
 
 ```bash
-RKC_URL="${RHOAI_KONFLUX_CENTRAL_REPO_URL:-https://github.com/red-hat-data-services/konflux-central.git}"
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_sync_renovate_configs.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
 ```
 
-Follow `sync-rhoai-renovate-configs` completely. On success, store the
-workflow `run_url` in pipeline state (the `RUN_ID` and `RKC_PATH` variables
-are set by the sync skill):
-```bash
-RUN_URL="https://github.com/${RKC_PATH}/actions/runs/${RUN_ID}"
-TMP=$(mktemp); NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-jq --arg ts "$NOW" --arg url "$RUN_URL" \
-  '.steps.renovate_sync.status = "done" | .steps.renovate_sync.run_url = $url | .last_status_change_at = $ts' \
-  "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
-uv run --script "scripts/update_jira_issue.py" "$JIRA_URL" \
-  --add-label "renovate-sync-triggered" || true
-```
+- Exit 0: the script has already updated `pipeline_state.json` (status `done`, labels `renovate-sync-done` added). No URL is produced. Set `NEW_PRS_RAISED="true"` (so Step 11 posts the final Jira comment).
+- Exit 1: workflow failed, cancelled, or timed out. Print `$OUTPUT` and stop. `pipeline_state.json` is unchanged; next CI run re-triggers.
 
 ---
 
@@ -473,7 +507,7 @@ SOMETHING_CHANGED="false"
 [[ "${NEW_PRS_RAISED:-false}" == "true" ]] && SOMETHING_CHANGED="true"
 
 if [[ "$SOMETHING_CHANGED" == "true" ]]; then
-  PENDING_COMMENT=$(uv run --script "scripts/build_progress_summary.py" \
+  PENDING_COMMENT=$(uv run --script "$SCRIPTS_DIR/build_progress_summary.py" \
     --state           "$PIPELINE_STATE" \
     --component-name  "$COMPONENT_NAME" \
     --product-context "$PRODUCT_CONTEXT" \
@@ -481,7 +515,7 @@ if [[ "$SOMETHING_CHANGED" == "true" ]]; then
     ${ASSIGNEE:+--assignee "$ASSIGNEE"})
 
   if [[ -n "$PENDING_COMMENT" ]]; then
-    uv run --script "scripts/update_jira_issue.py" "$JIRA_URL" \
+    uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
       --comment "$PENDING_COMMENT" || true
   fi
 fi
@@ -508,13 +542,13 @@ ALL_DONE=$(jq -r '
 Post the full table summary as the final comment, then resolve:
 
 ```bash
-FULL_COMMENT=$(uv run --script "scripts/build_progress_summary.py" \
+FULL_COMMENT=$(uv run --script "$SCRIPTS_DIR/build_progress_summary.py" \
   --state           "$PIPELINE_STATE" \
   --component-name  "$COMPONENT_NAME" \
   --product-context "$PRODUCT_CONTEXT" \
   --mode            "full")
 
-uv run --script "scripts/update_jira_issue.py" "$JIRA_URL" \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
   --comment   "$FULL_COMMENT" \
   --add-label "component-onboarding-completed" \
   --status    "Resolved"
@@ -529,10 +563,10 @@ Do not tag the assignee on the resolution comment.
 Transition Jira to "Review" (idempotent — safe to call if already in Review):
 
 ```bash
-bash "scripts/raise_jira_review.sh" \
+bash "$SCRIPTS_DIR/raise_jira_review.sh" \
   --workdir         "$WORKDIR" \
   --jira-url        "$JIRA_URL" \
-  --scripts-dir     "scripts" \
+  --scripts-dir     "$SCRIPTS_DIR" \
   --component-name  "$COMPONENT_NAME" \
   --product-context "$PRODUCT_CONTEXT" \
   ${ASSIGNEE:+--assignee "$ASSIGNEE"}
