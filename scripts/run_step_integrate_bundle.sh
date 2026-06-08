@@ -112,18 +112,25 @@ if grep -qF "$RELATED_IMAGE_NAME" "$BUNDLE_PATCH" 2>/dev/null; then
   exit 2
 fi
 
-# Update bundle-patch.yaml
-uv run --script "$SCRIPTS_DIR/update_bundle_dockerfile_git_labels.py" \
-  --bundle-patch    "$BUNDLE_PATCH" \
-  --image-name      "$RELATED_IMAGE_NAME" \
-  --image-value     "$RELATED_IMAGE_VALUE" \
-  --component-name  "$COMPONENT_NAME" \
-  --repo-url        "$REPO_URL" \
-  --repo-branch     "$REPO_BRANCH" || {
+# Update bundle-patch.yaml — add relatedImages entry
+uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-array-entry \
+  "$BUNDLE_PATCH" \
+  --array-key relatedImages \
+  --name      "$RELATED_IMAGE_NAME" \
+  --value     "$RELATED_IMAGE_VALUE" || {
   echo "ERROR: Could not update bundle-patch.yaml." >&2; exit 1
 }
 
 FILES_CHANGED="bundle/bundle-patch.yaml"
+
+# Update Dockerfile git labels (if a Dockerfile exists in the bundle dir)
+BUNDLE_DOCKERFILE="$CLONE_DIR/bundle/Dockerfile"
+if [[ -f "$BUNDLE_DOCKERFILE" ]]; then
+  eval "$(uv run --script "$SCRIPTS_DIR/update_bundle_dockerfile_git_labels.py" \
+    "$BUNDLE_DOCKERFILE" \
+    --component-name "$COMPONENT_NAME")" || true
+  FILES_CHANGED="$FILES_CHANGED bundle/Dockerfile"
+fi
 
 # RHOAI: also update config/build-config.yaml
 if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
@@ -157,7 +164,7 @@ for attempt in 1 2 3; do
     --src-url     "$BC_URL" \
     --src-branch  "$DEST_BRANCH" \
     --dest-url    "$BC_URL" \
-    --dest-branch "main" \
+    --dest-branch "$SRC_BRANCH" \
     --title       "Add ${COMPONENT_NAME} to bundle relatedImages" \
     --description "Adds relatedImages entry for '${COMPONENT_NAME}' to bundle/bundle-patch.yaml.
 
