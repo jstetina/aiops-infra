@@ -107,7 +107,7 @@ timeout 2700 env GITLAB_SSL_VERIFY=false bash "$SCRIPTS_DIR/setup_gitlab_playpen
 rc=$?
 set -e
 if [[ $rc -eq 0 ]]; then
-  CLONE_DIR=$(head -1 /tmp/playpen_quay.out)
+  CLONE_DIR=$(tail -2 /tmp/playpen_quay.out | head -1)
   DEST_BRANCH=$(tail -1 /tmp/playpen_quay.out)
 elif [[ $rc -eq 124 ]]; then
   echo "ERROR: Clone of app-interface timed out after 45 minutes. Check VPN and retry." >&2; exit 1
