@@ -90,11 +90,16 @@ elif [[ "$CHECK_EXIT" -eq 2 ]]; then
   echo "ERROR: check_quay_repo.sh returned tool error" >&2; exit 1
 fi
 
-# Step: Fork app-interface
-FORK_URL=$(GITLAB_SSL_VERIFY=false uv run --script "$SCRIPTS_DIR/setup_gitlab_fork.py" \
-  --gitlab-repo-url "$APP_INTERFACE_URL") || {
-  echo "ERROR: Could not fork app-interface. Check GITLAB_TOKEN api scope." >&2; exit 1
-}
+# Step: Fork app-interface (skip if APP_INTERFACE_URL is already in the user's namespace)
+if [[ "$APP_INTERFACE_URL" == *"/${GITLAB_USER}/"* || "$APP_INTERFACE_URL" == *"/${GITLAB_USER}.git"* ]]; then
+  echo "APP_INTERFACE_URL is already owned by ${GITLAB_USER} — using directly as fork."
+  FORK_URL="$APP_INTERFACE_URL"
+else
+  FORK_URL=$(GITLAB_SSL_VERIFY=false uv run --script "$SCRIPTS_DIR/setup_gitlab_fork.py" \
+    --gitlab-repo-url "$APP_INTERFACE_URL") || {
+    echo "ERROR: Could not fork app-interface. Check GITLAB_TOKEN api scope." >&2; exit 1
+  }
+fi
 
 # Step: Clone (with 45-minute timeout for this large repo)
 cd "$WORKDIR"
