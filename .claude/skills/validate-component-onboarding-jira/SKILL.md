@@ -38,6 +38,17 @@ The user may also say "validate RHOAIENG-1234" or paste the URL. If only a key i
 
 ## Implementation
 
+## Locate Scripts Directory
+
+```bash
+SCRIPTS_DIR="${AIOPS_INFRA_DIR:-/tmp/aiops-infra}/scripts"
+if [[ ! -d "$SCRIPTS_DIR" ]]; then
+  echo "ERROR: scripts directory not found at $SCRIPTS_DIR"
+  echo "  Set AIOPS_INFRA_DIR to the root of the aiops-infra checkout."
+  exit 1
+fi
+```
+
 ## Step 0: Check prerequisites
 
 Check if `JIRA_USER_EMAIL`, `JIRA_SERVER`, and `JIRA_API_TOKEN` environment variables are set.
@@ -62,7 +73,7 @@ Extract the issue ID from the URL — the last non-empty path segment.
 For `https://redhat.atlassian.net/browse/RHOAIENG-1234`, the issue ID is `RHOAIENG-1234`.
 
 ```bash
-eval "$(bash "scripts/init_workdir.sh" --jira-url "$JIRA_URL")"
+eval "$(bash "$SCRIPTS_DIR/init_workdir.sh" --jira-url "$JIRA_URL")"
 echo "Working directory: $WORKDIR"
 ```
 
@@ -71,14 +82,14 @@ echo "Working directory: $WORKDIR"
 Run from inside the working directory so the output file lands there:
 
 ```bash
-(cd <absolute_path>/<issue_id> && uv run --script scripts/fetch_jira_details.py <jira_url>)
+(cd <absolute_path>/<issue_id> && uv run --script "$SCRIPTS_DIR/fetch_jira_details.py" <jira_url>)
 ```
 
 On success: `<issue_id>/component_onboarding_details.json` is created.
 On failure (exit code 1): display the script's stderr, then attempt a best-effort Jira update (it may also fail if credentials are the root cause — suppress any error from the update call), then stop:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-failed" \
   --remove-label "validation-successful" \
   --comment "Validation failed at Step 1 (Fetch Jira Details).
@@ -98,14 +109,14 @@ Then stop with: `"ERROR in Step 1 (Fetch Jira Details): <message>. Aborting."`
 Run from inside the working directory:
 
 ```bash
-(cd <absolute_path>/<issue_id> && uv run --script scripts/download_jira_attachment.py <jira_url> component_onboarding_details.yaml)
+(cd <absolute_path>/<issue_id> && uv run --script "$SCRIPTS_DIR/download_jira_attachment.py" <jira_url> component_onboarding_details.yaml)
 ```
 
 On success: `<issue_id>/component_onboarding_details.yaml` is created.
 On failure (exit code 1): display stderr, update the Jira issue, then stop:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-failed" \
   --remove-label "validation-successful" \
   --comment "Validation failed at Step 2 (Download Attachment).
@@ -120,16 +131,16 @@ Then stop with: `"ERROR in Step 2 (Download Attachment): <message>. Aborting."`
 ### Step 5: Validate YAML against schema
 
 ```bash
-uv run --script scripts/validate_yaml_schema.py \
-  <absolute_path>/<issue_id>/component_onboarding_details.yaml \
-  schemas/component_onboarding_details.schema.json
+uv run --script "$SCRIPTS_DIR/validate_yaml_schema.py" \
+  "$WORKDIR/component_onboarding_details.yaml" \
+  "${AIOPS_INFRA_DIR:-/tmp/aiops-infra}/schemas/component_onboarding_details.schema.json"
 ```
 
 On success (exit code 0): print "Validation passed." and continue to the branch check below.
 On failure (exit code 1): capture all stderr output as `<validation_errors>`, display them, update the Jira issue with the specific errors, then stop:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-failed" \
   --remove-label "validation-successful" \
   --comment "Validation failed at Step 3 (Schema Validation).
@@ -150,13 +161,22 @@ Read `inputs.product_context` and `inputs.repo_branch` from the downloaded YAML.
 
 If `product_context == "RHOAI"`:
 - Read `inputs.target_rhoai_version` (canonical form, e.g. `3.5` or `3.5-ea-1`).
-- Derive the expected branch:
-  - If no EA suffix: `expected_branch = "rhoai-<VERSION_X>.<VERSION_Y>"` (e.g. `rhoai-3.5`)
-  - If EA suffix present (format `<x>.<y>-ea-<n>`): `expected_branch = "rhoai-<VERSION_X>.<VERSION_Y>-ea.<VERSION_N>"` (e.g. `rhoai-3.5-ea.1`)
+- Derive the expected branch using this exact bash:
+  ```bash
+  TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$WORKDIR/component_onboarding_details.yaml" | awk '{print $2}' | tr -d '"'"'")
+  if echo "$TARGET_RHOAI_VERSION" | grep -qE '^[0-9]+\.[0-9]+-ea-[0-9]+$'; then
+    EXPECTED_BRANCH="rhoai-$(echo "$TARGET_RHOAI_VERSION" | sed 's/-ea-/-ea./')"
+  elif echo "$TARGET_RHOAI_VERSION" | grep -qE '^[0-9]+\.[0-9]+$'; then
+    EXPECTED_BRANCH="rhoai-$TARGET_RHOAI_VERSION"
+  else
+    echo "ERROR: Cannot parse target_rhoai_version '${TARGET_RHOAI_VERSION}'" >&2; exit 1
+  fi
+  REPO_BRANCH=$(grep -m1 'repo_branch:' "$WORKDIR/component_onboarding_details.yaml" | awk '{print $2}')
+  ```
 - If `repo_branch != expected_branch`, update Jira and stop:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-failed" \
   --remove-label "validation-successful" \
   --comment "Validation failed at Step 3b (Branch Cross-Validation).
@@ -181,7 +201,15 @@ Dockerfile digest check skipped (not required for ODH components).
 and proceed to Step 6.
 
 Read `inputs.repo_url`, `inputs.repo_branch`, `inputs.context_path`, and
-`inputs.dockerfile_path` from the downloaded YAML.
+`inputs.dockerfile_path` from the downloaded YAML using `awk` — do NOT use
+`sed 's/.*: *//'` as it strips the `https:` prefix:
+
+```bash
+REPO_URL=$(grep -m1 'repo_url:' "$WORKDIR/component_onboarding_details.yaml" | awk '{print $2}' | tr -d '"'"'")
+REPO_BRANCH=$(grep -m1 'repo_branch:' "$WORKDIR/component_onboarding_details.yaml" | awk '{print $2}' | tr -d '"'"'")
+CONTEXT_PATH=$(grep -m1 'context_path:' "$WORKDIR/component_onboarding_details.yaml" | awk '{print $2}' | tr -d '"'"'")
+DOCKERFILE_PATH=$(grep -m1 'dockerfile_path:' "$WORKDIR/component_onboarding_details.yaml" | awk '{print $2}' | tr -d '"'"'")
+```
 
 Construct the raw GitHub URL:
 
@@ -194,7 +222,7 @@ else
   DOCKERFILE_RAW_URL="${REPO_RAW_BASE}/${repo_branch}/${CLEAN_CTX}/${dockerfile_path}"
 fi
 
-uv run --script scripts/check_dockerfile_digests.py \
+uv run --script "$SCRIPTS_DIR/check_dockerfile_digests.py" \
   --dockerfile-url "$DOCKERFILE_RAW_URL"
 ```
 
@@ -203,7 +231,7 @@ On **exit 0**: print `Dockerfile digest check passed.` and continue.
 On **exit 2** (Dockerfile not reachable): update Jira and stop:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-failed" \
   --remove-label "validation-successful" \
   --comment "Validation failed at Step 5c (Dockerfile Digest Check).
@@ -220,7 +248,7 @@ Then stop with: `ERROR in Step 5c (Dockerfile Digest Check): Could not fetch Doc
 On **exit 1** (digest violations found): capture stderr as `<digest_errors>`, update Jira and stop:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-failed" \
   --remove-label "validation-successful" \
   --comment "Validation failed at Step 5c (Dockerfile Digest Check).
@@ -253,7 +281,7 @@ ALREADY_VALIDATED=$(jq -r '[.fields.labels[] | select(. == "validation-successfu
 If `ALREADY_VALIDATED == "true"`, skip the comment — just update labels and status silently:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-successful" \
   --remove-label "validation-failed" \
   --status "In Progress"
@@ -262,7 +290,7 @@ uv run --script scripts/update_jira_issue.py <jira_url> \
 If `ALREADY_VALIDATED != "true"`, post the full success comment:
 
 ```bash
-uv run --script scripts/update_jira_issue.py <jira_url> \
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" <jira_url> \
   --add-label "validation-successful" \
   --remove-label "validation-failed" \
   --comment "Validation passed for <issue_id>.
