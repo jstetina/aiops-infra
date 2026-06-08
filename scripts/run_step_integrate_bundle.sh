@@ -76,14 +76,19 @@ eval "$(bash "$SCRIPTS_DIR/resolve_bundle_image.sh" \
   --quay-repo      "$QUAY_REPO_NAME")"
 # Sets: RELATED_IMAGE_NAME, RELATED_IMAGE_VALUE, USING_PLACEHOLDER
 
-# Clone (sparse)
+# Clone (sparse) — RHOAI uses the version branch, ODH uses main
 cd "$WORKDIR"
-SPARSE="bundle/bundle-patch.yaml"
-[[ "$PRODUCT_CONTEXT" == "RHOAI" ]] && SPARSE="$SPARSE config/build-config.yaml"
+if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
+  SRC_BRANCH="$BRANCH_NAME"
+  SPARSE="bundle config"
+else
+  SRC_BRANCH="main"
+  SPARSE="bundle"
+fi
 
 PLAYPEN_OUTPUT=$(bash "$SCRIPTS_DIR/setup_github_playpen.sh" \
   --src-url     "$BC_URL" \
-  --src-branch  "main" \
+  --src-branch  "$SRC_BRANCH" \
   --dest-branch "$JIRA_ID" \
   --sparse-files "$SPARSE") || {
   echo "ERROR: Playpen setup for build-config failed." >&2; exit 1
