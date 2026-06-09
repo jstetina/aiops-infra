@@ -61,18 +61,44 @@ echo "ODH_KONFLUX_CENTRAL_REPO_URL=${ODH_KONFLUX_CENTRAL_REPO_URL:-(not set, usi
 echo "OKC_URL resolved to: $OKC_URL"
 OKC_PATH=$(echo "$OKC_URL" | sed 's|https://github.com/||;s|\.git$||')
 
-# Check for existing PipelineRun in fork (idempotency)
-FORK_URL=$(uv run --script "$SCRIPTS_DIR/setup_github_fork.py" \
-  --github-repo-url "$OKC_URL") || {
-  echo "ERROR: Could not fork odh-konflux-central." >&2; exit 1
-}
+# Derived file/run names
+PUSH_YAML_FILE="${COMPONENT_NAME}-push.yaml"
+PR_YAML_FILE="${COMPONENT_NAME}-pull-request.yaml"
+PUSH_RUN_NAME="${COMPONENT_NAME}-on-push"
+PR_RUN_NAME="${COMPONENT_NAME}-on-pull-request"
+SERVICE_ACCOUNT_NAME="build-pipeline-${KONFLUX_COMPONENT_NAME}"
+NAMESPACE="open-data-hub-tenant"
+APPLICATION="opendatahub-builds"
+
+if [[ "$CONTEXT_PATH" == "./" || "$CONTEXT_PATH" == "." ]]; then
+  CONTEXT_PATH_NORMALIZED="."
+else
+  CONTEXT_PATH_NORMALIZED="$CONTEXT_PATH"
+fi
+
+# Fast-path idempotency check via GitHub API
+PUSH_API_URL="https://api.github.com/repos/${OKC_PATH}/contents/pipelineruns/${REPO_NAME}/${PUSH_YAML_FILE}?ref=main"
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github.v3+json" \
+  "$PUSH_API_URL" 2>/dev/null || echo "000")
+
+if [[ "$HTTP_STATUS" == "200" ]]; then
+  echo "PipelineRun '${PUSH_YAML_FILE}' already exists in odh-konflux-central. No action needed."
+  uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --add-label "okc-changes-done" \
+    --comment "PipelineRun files for '$COMPONENT_NAME' already exist in odh-konflux-central at 'pipelineruns/$REPO_NAME/'. No action needed." || true
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step okc --status done
+  exit 2
+fi
 
 cd "$WORKDIR"
 PLAYPEN_OUTPUT=$(bash "$SCRIPTS_DIR/setup_github_playpen.sh" \
-  --src-url    "$OKC_URL" \
-  --src-branch "main" \
+  --src-url     "$OKC_URL" \
+  --src-branch  "main" \
   --dest-branch "$JIRA_ID" \
-  --sparse-files "pipelineruns") || {
+  --sparse-files "pipelineruns/template pipelineruns/$REPO_NAME .github/workflows") || {
   echo "ERROR: Playpen setup for odh-konflux-central failed." >&2; exit 1
 }
 CLONE_DIR=$(echo "$PLAYPEN_OUTPUT" | head -1)
@@ -80,24 +106,77 @@ DEST_BRANCH=$(echo "$PLAYPEN_OUTPUT" | tail -1)
 
 # Detect prefetch method
 eval "$(bash "$SCRIPTS_DIR/detect_prefetch_input.sh" \
-  --repo-url "$REPO_URL" \
-  --branch   "$REPO_BRANCH")" 2>/dev/null || true
+  --repo-url    "$REPO_URL" \
+  --context-path "$CONTEXT_PATH_NORMALIZED" 2>/dev/null)" || true
 
-# Generate PipelineRun YAMLs using the onboarder-workflow template if available,
-# else use ensure_github_branch to create the branch with generated files
-bash "$SCRIPTS_DIR/ensure_github_branch.sh" \
-  --clone-dir          "$CLONE_DIR" \
-  --branch             "$DEST_BRANCH" \
-  --component-name     "$KONFLUX_COMPONENT_NAME" \
-  --repo-name          "$REPO_NAME" \
-  --repo-url           "$REPO_URL" \
-  --repo-branch        "$REPO_BRANCH" \
-  --context-path       "$CONTEXT_PATH" \
-  --dockerfile-path    "$DOCKERFILE_PATH" \
-  --quay-org           "$QUAY_ORG" \
-  ${PREFETCH_INPUT:+--prefetch-input "$PREFETCH_INPUT"} \
-  ${BUILD_TYPE:+--build-type "$BUILD_TYPE"} || {
-  echo "ERROR: ensure_github_branch.sh failed for ODH OKC." >&2; exit 1
+# Verify templates exist
+[[ -f "$CLONE_DIR/pipelineruns/template/odh-component-push.yaml" ]] || {
+  echo "ERROR: Push template not found at $CLONE_DIR/pipelineruns/template/odh-component-push.yaml" >&2; exit 1
+}
+[[ -f "$CLONE_DIR/pipelineruns/template/odh-component-pull-request.yaml" ]] || {
+  echo "ERROR: PR template not found at $CLONE_DIR/pipelineruns/template/odh-component-pull-request.yaml" >&2; exit 1
+}
+
+mkdir -p "$CLONE_DIR/pipelineruns/$REPO_NAME"
+
+# Generate push PipelineRun
+PUSH_FILE="$CLONE_DIR/pipelineruns/$REPO_NAME/$PUSH_YAML_FILE"
+cp "$CLONE_DIR/pipelineruns/template/odh-component-push.yaml" "$PUSH_FILE"
+sed -i \
+  -e "s|component-git-url|${REPO_URL}|g" \
+  -e "s|odh-component-name-ci|${KONFLUX_COMPONENT_NAME}|g" \
+  -e "s|odh-file-name-on-push|${PUSH_RUN_NAME}|g" \
+  -e "s|quay.io/opendatahub/quayurl|quay.io/${QUAY_ORG}/${COMPONENT_NAME}|g" \
+  -e "s|dockerfilepath|${DOCKERFILE_PATH}|g" \
+  -e "s|    value: \\.  |    value: ${CONTEXT_PATH_NORMALIZED}|g" \
+  -e "s|build-pipeline-sa-namw|${SERVICE_ACCOUNT_NAME}|g" \
+  -e "s|open-data-hub-tenant|${NAMESPACE}|g" \
+  -e "s|opendatahub-builds|${APPLICATION}|g" \
+  "$PUSH_FILE"
+
+grep -q "name: $PUSH_RUN_NAME" "$PUSH_FILE" || {
+  echo "ERROR: Push PipelineRun substitution failed — PUSH_RUN_NAME not found." >&2; exit 1
+}
+
+# Generate pull-request PipelineRun
+PR_FILE="$CLONE_DIR/pipelineruns/$REPO_NAME/$PR_YAML_FILE"
+cp "$CLONE_DIR/pipelineruns/template/odh-component-pull-request.yaml" "$PR_FILE"
+sed -i \
+  -e "s|build.appstudio.openshift.io/repo: #component-git-url?rev={{revision}}|build.appstudio.openshift.io/repo: ${REPO_URL}?rev={{revision}}|g" \
+  -e "s|odh-component-name-ci|${KONFLUX_COMPONENT_NAME}|g" \
+  -e "s|  name: #odh-file-name-on-pull-request|  name: ${PR_RUN_NAME}|g" \
+  -e "s|quay.io/opendatahub/quayurl|quay.io/${QUAY_ORG}/${COMPONENT_NAME}|g" \
+  -e "s|dockerfilepath|${DOCKERFILE_PATH}|g" \
+  -e "s|    value: \.  |    value: ${CONTEXT_PATH_NORMALIZED}|g" \
+  -e "s|    serviceAccountName: #build-pipeline-sa-name|    serviceAccountName: ${SERVICE_ACCOUNT_NAME}|g" \
+  -e "s|open-data-hub-tenant|${NAMESPACE}|g" \
+  -e "s|opendatahub-builds|${APPLICATION}|g" \
+  "$PR_FILE"
+
+grep -q "name: $PR_RUN_NAME" "$PR_FILE" || {
+  echo "ERROR: PR PipelineRun substitution failed — PR_RUN_NAME not found." >&2; exit 1
+}
+
+# Update onboarder workflow component list
+WORKFLOW_FILE="$CLONE_DIR/.github/workflows/odh-konflux-onboarder.yml"
+if [[ -f "$WORKFLOW_FILE" ]] && ! grep -q "          - ${REPO_NAME}$" "$WORKFLOW_FILE" 2>/dev/null; then
+  uv run --script "$SCRIPTS_DIR/edit_yaml.py" insert-list-item \
+    "$WORKFLOW_FILE" \
+    --list-key "on.workflow_dispatch.inputs.components.options" \
+    --value "$REPO_NAME" || {
+    echo "ERROR: Could not insert $REPO_NAME into onboarder workflow options." >&2; exit 1
+  }
+fi
+
+# Commit and push
+bash "$SCRIPTS_DIR/git_commit_push.sh" \
+  --clone-dir "$CLONE_DIR" \
+  --files     "pipelineruns/$REPO_NAME/$PUSH_YAML_FILE pipelineruns/$REPO_NAME/$PR_YAML_FILE .github/workflows/odh-konflux-onboarder.yml" \
+  --message   "Add ${KONFLUX_COMPONENT_NAME} PipelineRuns for ${REPO_NAME}" \
+  --branch    "$DEST_BRANCH" || {
+  cd "$CLONE_DIR" || { echo "ERROR: Push failed — cannot cd to $CLONE_DIR." >&2; exit 1; }
+  git fetch --unshallow origin || { echo "ERROR: Push failed — git fetch --unshallow failed." >&2; exit 1; }
+  git push origin "$DEST_BRANCH" || { echo "ERROR: Push failed after unshallow." >&2; exit 1; }
 }
 
 # Raise PR
