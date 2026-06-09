@@ -284,7 +284,12 @@ def cmd_insert_list_item(args):
 
     parts = args.list_key.split(".")
     node = data
-    for part in parts:
+    for i, part in enumerate(parts):
+        if not isinstance(node, dict):
+            prefix = ".".join(parts[:i])
+            print(f"ERROR: '{prefix}' is a {type(node).__name__}, not a mapping — "
+                  f"cannot traverse key '{part}' in {path}", file=sys.stderr)
+            sys.exit(1)
         key = _resolve_key(node, part)
         if key not in node or node[key] is None:
             node[key] = []

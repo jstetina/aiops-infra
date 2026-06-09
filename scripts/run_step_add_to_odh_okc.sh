@@ -162,7 +162,7 @@ WORKFLOW_FILE="$CLONE_DIR/.github/workflows/odh-konflux-onboarder.yml"
 if [[ -f "$WORKFLOW_FILE" ]] && ! grep -q "          - ${REPO_NAME}$" "$WORKFLOW_FILE" 2>/dev/null; then
   uv run --script "$SCRIPTS_DIR/edit_yaml.py" insert-list-item \
     "$WORKFLOW_FILE" \
-    --list-key "on.workflow_dispatch.inputs.components.options" \
+    --list-key "on.workflow_dispatch.inputs.component.options" \
     --value "$REPO_NAME" || {
     echo "ERROR: Could not insert $REPO_NAME into onboarder workflow options." >&2; exit 1
   }
