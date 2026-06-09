@@ -53,9 +53,10 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" && -z "$TARGET_RHOAI_VERSION" ]]; then
 fi
 
 # Resolve BC_URL from product context
+# BUILD_CONFIG_REPO_URL is kept for backward compat but prefer the split vars:
+# RHOAI_BUILD_CONFIG_REPO_URL / ODH_BUILD_CONFIG_REPO_URL (handled inside resolve_bc_url.sh)
 eval "$(bash "$SCRIPTS_DIR/resolve_bc_url.sh" \
-  --product-context "$PRODUCT_CONTEXT" \
-  ${BUILD_CONFIG_REPO_URL:+--override "$BUILD_CONFIG_REPO_URL"})"
+  --product-context "$PRODUCT_CONTEXT")"
 # Sets: BC_URL, BC_PATH
 echo "BC_URL : $BC_URL"
 
