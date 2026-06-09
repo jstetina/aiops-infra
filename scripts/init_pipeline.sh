@@ -35,6 +35,8 @@ fi
 
 if [[ -n "$WORKDIR_OVERRIDE" ]]; then
   WORKDIR="$WORKDIR_OVERRIDE"
+elif [[ -n "${WORKDIR:-}" ]]; then
+  : # use WORKDIR from environment as-is
 else
   WORKDIR="$(pwd)/${JIRA_ID}"
 fi
