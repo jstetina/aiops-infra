@@ -28,8 +28,12 @@ if [[ -n "$OVERRIDE_URL" ]]; then
 else
   [[ -z "$PRODUCT_CONTEXT" ]] && { echo "ERROR: --product-context is required when --override is not set" >&2; exit 1; }
   case "$PRODUCT_CONTEXT" in
-    ODH)   BC_URL="https://github.com/opendatahub-io/ODH-Build-Config.git" ;;
-    RHOAI) BC_URL="https://github.com/red-hat-data-services/RHOAI-Build-Config.git" ;;
+    ODH)
+      BC_URL="${ODH_BUILD_CONFIG_REPO_URL:-https://github.com/opendatahub-io/ODH-Build-Config.git}"
+      ;;
+    RHOAI)
+      BC_URL="${RHOAI_BUILD_CONFIG_REPO_URL:-https://github.com/red-hat-data-services/RHOAI-Build-Config.git}"
+      ;;
     *) echo "ERROR: Unknown product_context '$PRODUCT_CONTEXT'. Expected 'ODH' or 'RHOAI'." >&2; exit 1 ;;
   esac
   echo "[resolve_bc_url] Derived from product_context ($PRODUCT_CONTEXT): $BC_URL" >&2
