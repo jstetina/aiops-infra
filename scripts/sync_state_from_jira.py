@@ -156,7 +156,13 @@ def extract_urls_from_comment(body) -> list[str]:
     return _URL_RE.findall(body or "")
 
 
+# Steps that are bypassed under ONBOARD_DRY_RUN — never restore to pr_raised from labels
+_DRY_RUN_BYPASS_STEPS = {"onboarder_workflow", "renovate_sync"}
+
+
 def sync_labels(state: dict, labels: list[str]) -> list[str]:
+    import os
+    dry_run = os.environ.get("ONBOARD_DRY_RUN", "false").lower() == "true"
     changes = []
     for label in labels:
         mapping = LABEL_MAP.get(label)
@@ -176,6 +182,8 @@ def sync_labels(state: dict, labels: list[str]) -> list[str]:
             # happen when the initial state was created before is_operator
             # was known, but the PR was raised in a previous run)
             if current in ("pending", "skipped"):
+                if dry_run and step_key in _DRY_RUN_BYPASS_STEPS:
+                    continue  # don't restore workflow steps to pr_raised in dry-run mode
                 step["status"] = new_status
                 changes.append(f"{step_key}: {current} → {new_status} (label: {label})")
     return changes
