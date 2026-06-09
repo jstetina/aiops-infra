@@ -231,6 +231,10 @@ def sync_urls_from_comments(state: dict, comments: list[dict], labels: list[str]
         step = state.get("steps", {}).get(step_key)
         if step is None or step.get(url_field, ""):
             continue
+        # Only populate URL for steps that are already raised/merged — never for pending steps.
+        # Injecting a URL into a pending step causes wrapper scripts to skip raising a new one.
+        if step.get("status", "pending") in ("pending", "skipped"):
+            continue
         for url in all_urls:
             if url in claimed_urls:
                 continue
@@ -246,6 +250,8 @@ def sync_urls_from_comments(state: dict, comments: list[dict], labels: list[str]
     for step_key, url_field, url_re, kw_re in SHARED_URL_PATTERNS:
         step = state.get("steps", {}).get(step_key)
         if step is None or step.get(url_field, ""):
+            continue
+        if step.get("status", "pending") in ("pending", "skipped"):
             continue
         if not _step_has_label(step_key):
             continue
@@ -269,6 +275,8 @@ def sync_urls_from_comments(state: dict, comments: list[dict], labels: list[str]
     for step_key, url_field in UNCLAIMED_URL_STEPS:
         step = state.get("steps", {}).get(step_key)
         if step is None or step.get(url_field, ""):
+            continue
+        if step.get("status", "pending") in ("pending", "skipped"):
             continue
         if not _step_has_label(step_key):
             continue
