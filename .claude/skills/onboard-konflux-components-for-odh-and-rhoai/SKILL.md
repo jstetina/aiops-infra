@@ -109,7 +109,10 @@ bash "$SCRIPTS_DIR/check_prerequisites.sh" \
 ## Step 2: Set Up Working Directory and Initialize State
 
 ```bash
-eval "$(bash "$SCRIPTS_DIR/init_pipeline.sh" --jira-url "$JIRA_URL")"
+# init_pipeline.sh writes all informational output to stderr by design.
+# Capture stdout only — do NOT add 2>&1 or the status lines will break the eval.
+_INIT_VARS=$(bash "$SCRIPTS_DIR/init_pipeline.sh" --jira-url "$JIRA_URL")
+eval "$_INIT_VARS"
 echo "Working directory: $WORKDIR"
 echo "Pipeline state: $PIPELINE_STATE"
 ```
@@ -154,11 +157,14 @@ On failure: **hard blocker**. Display the child skill's error and stop.
 **Skip computation if** `component_name` is already non-empty in `pipeline_state.json`, but still read variables from the YAML into shell for use in later steps.
 
 ```bash
-eval "$(bash "$SCRIPTS_DIR/parse_component_details.sh" \
+# parse_component_details.sh writes all human-readable output to stderr by design.
+# Capture stdout only — do NOT add 2>&1 or the summary lines will break the eval.
+_COMP_VARS=$(bash "$SCRIPTS_DIR/parse_component_details.sh" \
   --workdir        "$WORKDIR" \
   --jira-id        "$JIRA_ID" \
   --scripts-dir    "$SCRIPTS_DIR" \
-  --pipeline-state "$PIPELINE_STATE")"
+  --pipeline-state "$PIPELINE_STATE")
+eval "$_COMP_VARS"
 # Sets: COMPONENT_NAME IS_OPERATOR REPO_URL REPO_BRANCH
 #       PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI
 ```
@@ -218,12 +224,12 @@ For each newly merged step, add its `label_done` Jira label so the state persist
 for MERGED_KEY in $NEWLY_MERGED; do
   DONE_LABEL=$(jq -r --arg k "$MERGED_KEY" '.steps[$k].label_done // ""' "$PIPELINE_STATE")
   RAISED_LABEL=$(jq -r --arg k "$MERGED_KEY" '.steps[$k].label_raised // ""' "$PIPELINE_STATE")
-  LABEL_ARGS=""
-  [[ -n "$DONE_LABEL" ]]   && LABEL_ARGS="$LABEL_ARGS --add-label $DONE_LABEL"
-  [[ -n "$RAISED_LABEL" ]] && LABEL_ARGS="$LABEL_ARGS --remove-label $RAISED_LABEL"
-  if [[ -n "$LABEL_ARGS" ]]; then
+  LABEL_ARGS=()
+  [[ -n "$DONE_LABEL" ]]   && LABEL_ARGS+=("--add-label"    "$DONE_LABEL")
+  [[ -n "$RAISED_LABEL" ]] && LABEL_ARGS+=("--remove-label" "$RAISED_LABEL")
+  if [[ "${#LABEL_ARGS[@]}" -gt 0 ]]; then
     uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-      $LABEL_ARGS || true
+      "${LABEL_ARGS[@]}" || true
   fi
 done
 ```
