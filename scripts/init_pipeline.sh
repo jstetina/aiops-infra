@@ -206,6 +206,34 @@ else
     jq --arg v "$PRODUCT_CONTEXT" '.product_context = $v' "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
   fi
 
+  # Fix product-context-specific skip statuses: the initial init (Step 2) runs
+  # before PRODUCT_CONTEXT is known, so RHOAI/ODH-only steps default to "pending".
+  # Once Step 4 re-invokes with the real value, correct any pending steps that
+  # should be skipped for this product context.
+  if [[ -n "$PRODUCT_CONTEXT" ]]; then
+    TMP=$(mktemp)
+    if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
+      jq '
+        .steps |= with_entries(
+          if .key == ("pull_pipelines","delivery_repo","product_listing","auto_merge","renovate","renovate_sync")
+             and .value.status == "pending"
+          then .value.status = "skipped"
+          else .
+          end
+        )' "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
+    elif [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
+      jq '
+        .steps |= with_entries(
+          if .key == ("onboarder_workflow","onboarder")
+             and .value.status == "pending"
+          then .value.status = "skipped"
+          else .
+          end
+        )' "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
+    fi
+    rm -f "$TMP"
+  fi
+
   # Fix operator step: the initial init (Step 2) runs before IS_OPERATOR is
   # known, so it defaults to "skipped". Once Step 4 re-invokes with the real
   # value, correct the status if needed.

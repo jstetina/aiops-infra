@@ -117,6 +117,9 @@ echo "Working directory: $WORKDIR"
 echo "Pipeline state: $PIPELINE_STATE"
 ```
 
+`$PIPELINE_STATE` is the **full path** to `pipeline_state.json` (e.g. `.../RHOAIENG-1234/pipeline_state.json`).
+Use it directly in all `jq` and `bash` calls — never reconstruct it by appending a filename to `$WORKDIR`.
+
 (Full `--product-context` and `--component-name` are passed after Step 4 parses the YAML;
 `init_pipeline.sh` handles both fresh creation and resumption of an existing state file.)
 
@@ -279,7 +282,9 @@ EXIT_CODE=$?
 ```
 
 **CRITICAL — Exit 1 handling: do NOT read, debug, or edit any script.**
-On exit 1, print the output, post a Jira comment (see Step 9), and terminate the session.
+On exit 1, print the output, post a Jira comment (see Step 9), and **immediately stop — do not
+print a final summary, do not check remaining steps, do not run any further bash commands.**
+The session must end right after the Jira comment is posted.
 The wrapper scripts are self-contained; failures are environment or infrastructure issues,
 not LLM reasoning tasks. Editing scripts mid-run is strictly forbidden.
 
