@@ -259,6 +259,23 @@ def cmd_insert_simple_map_entry(args):
     print(f"Set '{args.key}' = '{args.value}' under '{args.map_key}' in {path}")
 
 
+_YAML11_BOOL_KEYS = {
+    "true": True, "false": False,
+    "yes": True, "no": False,
+    "on": True, "off": False,
+}
+
+
+def _resolve_key(node, part):
+    """Return the actual key to use in node, handling YAML 1.1 boolean aliases."""
+    if part in node:
+        return part
+    alias = _YAML11_BOOL_KEYS.get(part.lower())
+    if alias is not None and alias in node:
+        return alias
+    return part
+
+
 def cmd_insert_list_item(args):
     """Insert a scalar value into a list at the given key."""
     path = Path(args.file)
@@ -267,10 +284,16 @@ def cmd_insert_list_item(args):
 
     parts = args.list_key.split(".")
     node = data
-    for part in parts:
-        if part not in node or node[part] is None:
-            node[part] = []
-        node = node[part]
+    for i, part in enumerate(parts):
+        if not isinstance(node, dict):
+            prefix = ".".join(parts[:i])
+            print(f"ERROR: '{prefix}' is a {type(node).__name__}, not a mapping — "
+                  f"cannot traverse key '{part}' in {path}", file=sys.stderr)
+            sys.exit(1)
+        key = _resolve_key(node, part)
+        if key not in node or node[key] is None:
+            node[key] = []
+        node = node[key]
 
     if not isinstance(node, list):
         print(f"ERROR: '{args.list_key}' is not a list in {path}", file=sys.stderr)

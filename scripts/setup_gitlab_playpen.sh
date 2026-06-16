@@ -24,6 +24,9 @@
 
 set -euo pipefail
 
+# Skip SSL verification for internal GitLab instances with self-signed certs
+export GIT_SSL_NO_VERIFY=true
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 info()  { echo "[INFO]  $*" >&2; }
 warn()  { echo "[WARN]  $*" >&2; }
@@ -120,13 +123,13 @@ if [[ -n "$SPARSE_FILES" ]]; then
 
   cd "$CLONE_DIR"
 
-  git sparse-checkout init 2>&1 >&2
+  git sparse-checkout init >&2 2>&1
 
   # shellcheck disable=SC2086
-  git sparse-checkout set $SPARSE_FILES 2>&1 >&2
+  git sparse-checkout set $SPARSE_FILES >&2 2>&1
   info "Sparse files set: ${SPARSE_FILES}"
 
-  if ! git checkout "$SRC_BRANCH" 2>&1 >&2; then
+  if ! git checkout "$SRC_BRANCH" >&2 2>&1; then
     die "git checkout ${SRC_BRANCH} failed after sparse-checkout setup."
   fi
 else
@@ -162,7 +165,7 @@ if git ls-remote --heads "$DEST_REMOTE" "$DEST_BRANCH" 2>/dev/null | grep -q "$D
 fi
 
 info "Creating branch: ${DEST_BRANCH}"
-git checkout -b "$DEST_BRANCH" 2>&1 >&2
+git checkout -b "$DEST_BRANCH" >&2 2>&1
 
 info "Pushing branch '${DEST_BRANCH}' to remote '${DEST_REMOTE}'..."
 if ! git push -u "$DEST_REMOTE" "$DEST_BRANCH" 2>&1 | sed "s/${GITLAB_TOKEN}/***REDACTED***/g" >&2; then

@@ -156,7 +156,13 @@ def extract_urls_from_comment(body) -> list[str]:
     return _URL_RE.findall(body or "")
 
 
+# Steps that are bypassed under ONBOARD_DRY_RUN — never restore to pr_raised from labels
+_DRY_RUN_BYPASS_STEPS = {"onboarder_workflow", "renovate_sync"}
+
+
 def sync_labels(state: dict, labels: list[str]) -> list[str]:
+    import os
+    dry_run = os.environ.get("ONBOARD_DRY_RUN", "false").lower() == "true"
     changes = []
     for label in labels:
         mapping = LABEL_MAP.get(label)
@@ -176,6 +182,8 @@ def sync_labels(state: dict, labels: list[str]) -> list[str]:
             # happen when the initial state was created before is_operator
             # was known, but the PR was raised in a previous run)
             if current in ("pending", "skipped"):
+                if dry_run and step_key in _DRY_RUN_BYPASS_STEPS:
+                    continue  # don't restore workflow steps to pr_raised in dry-run mode
                 step["status"] = new_status
                 changes.append(f"{step_key}: {current} → {new_status} (label: {label})")
     return changes
@@ -223,6 +231,10 @@ def sync_urls_from_comments(state: dict, comments: list[dict], labels: list[str]
         step = state.get("steps", {}).get(step_key)
         if step is None or step.get(url_field, ""):
             continue
+        # Only populate URL for steps that are already raised/merged — never for pending steps.
+        # Injecting a URL into a pending step causes wrapper scripts to skip raising a new one.
+        if step.get("status", "pending") in ("pending", "skipped"):
+            continue
         for url in all_urls:
             if url in claimed_urls:
                 continue
@@ -238,6 +250,8 @@ def sync_urls_from_comments(state: dict, comments: list[dict], labels: list[str]
     for step_key, url_field, url_re, kw_re in SHARED_URL_PATTERNS:
         step = state.get("steps", {}).get(step_key)
         if step is None or step.get(url_field, ""):
+            continue
+        if step.get("status", "pending") in ("pending", "skipped"):
             continue
         if not _step_has_label(step_key):
             continue
@@ -261,6 +275,8 @@ def sync_urls_from_comments(state: dict, comments: list[dict], labels: list[str]
     for step_key, url_field in UNCLAIMED_URL_STEPS:
         step = state.get("steps", {}).get(step_key)
         if step is None or step.get(url_field, ""):
+            continue
+        if step.get("status", "pending") in ("pending", "skipped"):
             continue
         if not _step_has_label(step_key):
             continue

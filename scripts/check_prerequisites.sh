@@ -68,4 +68,4 @@ for tool in "${TOOLS[@]+"${TOOLS[@]}"}"; do
   fi
 done
 
-exit 0
+echo "Prerequisites OK"

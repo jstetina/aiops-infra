@@ -122,14 +122,14 @@ if [[ -n "$SPARSE_FILES" ]]; then
 
   cd "$CLONE_DIR"
 
-  git sparse-checkout init 2>&1 >&2
+  git sparse-checkout init >&2 2>&1
 
   # Split space-separated files into individual arguments
   # shellcheck disable=SC2086
-  git sparse-checkout set $SPARSE_FILES 2>&1 >&2
+  git sparse-checkout set $SPARSE_FILES >&2 2>&1
   info "Sparse files set: ${SPARSE_FILES}"
 
-  if ! git checkout "$SRC_BRANCH" 2>&1 >&2; then
+  if ! git checkout "$SRC_BRANCH" >&2 2>&1; then
     die "git checkout ${SRC_BRANCH} failed after sparse-checkout setup."
   fi
 else
@@ -144,8 +144,8 @@ else
 fi
 
 # Configure git identity for commits
-git config user.email "${GITHUB_USER}@users.noreply.github.com" 2>&1 >&2
-git config user.name  "${GITHUB_USER}" 2>&1 >&2
+git config user.email "${GITHUB_USER}@users.noreply.github.com" >&2 2>&1
+git config user.name  "${GITHUB_USER}" >&2 2>&1
 
 info "Clone complete: ${CLONE_DIR}"
 
@@ -160,7 +160,7 @@ fi
 
 # ── Create and push new branch ─────────────────────────────────────────────────
 info "Creating branch: ${DEST_BRANCH}"
-git checkout -b "$DEST_BRANCH" 2>&1 >&2
+git checkout -b "$DEST_BRANCH" >&2 2>&1
 
 info "Pushing branch '${DEST_BRANCH}' to remote '${DEST_REMOTE}'..."
 if ! git push -u "$DEST_REMOTE" "$DEST_BRANCH" 2>&1 | sed "s/${GITHUB_TOKEN}/***REDACTED***/g" >&2; then
