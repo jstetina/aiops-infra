@@ -9,6 +9,7 @@
 #     [--dest-branch <name>]    # optional: new branch to create (default: $GITHUB_USER-<timestamp>)
 #     [--sparse-files <paths>]  # optional: space-separated list of files/dirs for sparse checkout
 #     [--clone-dir <name>]      # optional: clone directory name (default: <repo-name>-playpen)
+#     [--no-shallow]            # optional: perform a full clone instead of --depth 1
 #
 # Environment:
 #   GITHUB_TOKEN  — required; used for git authentication via x-access-token
@@ -37,6 +38,7 @@ SRC_BRANCH="main"
 DEST_BRANCH=""
 SPARSE_FILES=""
 CLONE_DIR_NAME=""
+NO_SHALLOW=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --dest-branch)    DEST_BRANCH="${2:?--dest-branch requires a value}"; shift 2 ;;
     --sparse-files)   SPARSE_FILES="${2:?--sparse-files requires a value}"; shift 2 ;;
     --clone-dir)      CLONE_DIR_NAME="${2:?--clone-dir requires a value}"; shift 2 ;;
+    --no-shallow)     NO_SHALLOW=true; shift ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -112,10 +115,14 @@ if [[ -d "$CLONE_DIR" ]]; then
 fi
 
 # ── Clone ──────────────────────────────────────────────────────────────────────
-if [[ -n "$SPARSE_FILES" ]]; then
-  info "Cloning with sparse checkout (--no-checkout --depth 1)..."
+DEPTH_FLAG="--depth 1"
+$NO_SHALLOW && DEPTH_FLAG=""
 
-  if ! git clone --no-checkout --depth 1 --branch "$SRC_BRANCH" "$AUTH_SRC_URL" "$CLONE_DIR_NAME" 2>&1 | \
+if [[ -n "$SPARSE_FILES" ]]; then
+  info "Cloning with sparse checkout (--no-checkout${NO_SHALLOW:+ full history})..."
+
+  # shellcheck disable=SC2086
+  if ! git clone --no-checkout $DEPTH_FLAG --branch "$SRC_BRANCH" "$AUTH_SRC_URL" "$CLONE_DIR_NAME" 2>&1 | \
        sed "s/${GITHUB_TOKEN}/***REDACTED***/g" >&2; then
     die "git clone failed. Check network connectivity and GITHUB_TOKEN permissions."
   fi
@@ -133,9 +140,10 @@ if [[ -n "$SPARSE_FILES" ]]; then
     die "git checkout ${SRC_BRANCH} failed after sparse-checkout setup."
   fi
 else
-  info "Cloning (normal checkout, --depth 1)..."
+  info "Cloning (normal checkout${NO_SHALLOW:+, full history})..."
 
-  if ! git clone --depth 1 --branch "$SRC_BRANCH" "$AUTH_SRC_URL" "$CLONE_DIR_NAME" 2>&1 | \
+  # shellcheck disable=SC2086
+  if ! git clone $DEPTH_FLAG --branch "$SRC_BRANCH" "$AUTH_SRC_URL" "$CLONE_DIR_NAME" 2>&1 | \
        sed "s/${GITHUB_TOKEN}/***REDACTED***/g" >&2; then
     die "git clone failed. Check network connectivity and GITHUB_TOKEN permissions."
   fi

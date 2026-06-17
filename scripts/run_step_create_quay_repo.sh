@@ -108,7 +108,8 @@ timeout 2700 env GITLAB_SSL_VERIFY=false bash "$SCRIPTS_DIR/setup_gitlab_playpen
     --src-url    "$APP_INTERFACE_URL" \
     --dest-url   "$FORK_URL" \
     --src-branch master \
-    --dest-branch "$JIRA_ID" > /tmp/playpen_quay.out 2>&1
+    --dest-branch "$JIRA_ID" \
+    --no-shallow > /tmp/playpen_quay.out 2>&1
 rc=$?
 set -e
 if [[ $rc -eq 0 ]]; then
