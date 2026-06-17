@@ -169,7 +169,14 @@ git checkout -b "$DEST_BRANCH" >&2 2>&1
 
 info "Pushing branch '${DEST_BRANCH}' to remote '${DEST_REMOTE}'..."
 if ! git push -u "$DEST_REMOTE" "$DEST_BRANCH" 2>&1 | sed "s/${GITLAB_TOKEN}/***REDACTED***/g" >&2; then
-  die "git push failed. Check GITLAB_TOKEN write_repository scope and VPN connectivity."
+  info "Push failed — attempting git fetch --unshallow and retrying..."
+  if git fetch --unshallow origin 2>&1 | sed "s/${GITLAB_TOKEN}/***REDACTED***/g" >&2; then
+    if ! git push -u "$DEST_REMOTE" "$DEST_BRANCH" 2>&1 | sed "s/${GITLAB_TOKEN}/***REDACTED***/g" >&2; then
+      die "git push failed after unshallow. Check GITLAB_TOKEN write_repository scope and VPN connectivity."
+    fi
+  else
+    die "git push failed. Check GITLAB_TOKEN write_repository scope and VPN connectivity."
+  fi
 fi
 
 info "Branch '${DEST_BRANCH}' pushed successfully."
