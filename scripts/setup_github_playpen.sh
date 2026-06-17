@@ -164,7 +164,14 @@ git checkout -b "$DEST_BRANCH" >&2 2>&1
 
 info "Pushing branch '${DEST_BRANCH}' to remote '${DEST_REMOTE}'..."
 if ! git push -u "$DEST_REMOTE" "$DEST_BRANCH" 2>&1 | sed "s/${GITHUB_TOKEN}/***REDACTED***/g" >&2; then
-  die "git push failed. The branch may already exist on the remote, or GITHUB_TOKEN may lack write scope."
+  info "Push failed — attempting git fetch --unshallow and retrying..."
+  if git fetch --unshallow origin 2>&1 | sed "s/${GITHUB_TOKEN}/***REDACTED***/g" >&2; then
+    if ! git push -u "$DEST_REMOTE" "$DEST_BRANCH" 2>&1 | sed "s/${GITHUB_TOKEN}/***REDACTED***/g" >&2; then
+      die "git push failed after unshallow. The branch may already exist on the remote, or GITHUB_TOKEN may lack write scope."
+    fi
+  else
+    die "git push failed. The branch may already exist on the remote, or GITHUB_TOKEN may lack write scope."
+  fi
 fi
 
 info "Branch '${DEST_BRANCH}' pushed successfully."
