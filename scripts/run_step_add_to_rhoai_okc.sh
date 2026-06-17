@@ -47,6 +47,11 @@ REPO_BRANCH=$(grep -m1    'repo_branch:'    "$YAML_FILE" | awk '{print $2}')
 CONTEXT_PATH=$(grep -m1   'context_path:'   "$YAML_FILE" | awk '{print $2}')
 DOCKERFILE_PATH=$(grep -m1 'dockerfile_path:' "$YAML_FILE" | awk '{print $2}')
 TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' | tr -d '"')
+RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
+  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"' || true)
+[[ -z "$RELEASE_CATEGORY" ]] && RELEASE_CATEGORY="Generally Available"
+RHEL9_SUFFIX="-rhel9"
+[[ "$RELEASE_CATEGORY" == "Beta" ]] && RHEL9_SUFFIX="-rhel9-beta"
 
 ARCHITECTURES=()
 while IFS= read -r arch; do
@@ -188,7 +193,7 @@ spec:
     value:
     - '{{target_branch}}-{{revision}}'
   - name: output-image
-    value: quay.io/rhoai/${COMPONENT_NAME}-rhel9:{{target_branch}}
+    value: quay.io/rhoai/${COMPONENT_NAME}${RHEL9_SUFFIX}:{{target_branch}}
   - name: rhoai-version
     value: "${RHOAI_MINOR_VERSION}"
   - name: dockerfile

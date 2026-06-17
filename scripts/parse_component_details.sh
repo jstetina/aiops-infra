@@ -8,6 +8,7 @@
 #
 # Exports (via eval): COMPONENT_NAME IS_OPERATOR REPO_URL REPO_BRANCH
 #                     PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI
+#                     RELEASE_CATEGORY
 # Side effect: updates pipeline_state.json when --pipeline-state is provided.
 # Summary is printed to stderr so it does not pollute the eval output.
 
@@ -42,6 +43,9 @@ COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}')
 IS_OPERATOR=$(grep -m1    'is_operator:'    "$YAML_FILE" | awk '{print $2}')
 REPO_URL=$(grep -m1       'repo_url:'       "$YAML_FILE" | awk '{print $2}')
 REPO_BRANCH=$(grep -m1    'repo_branch:'    "$YAML_FILE" | awk '{print $2}')
+RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
+  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"' || true)
+[[ -z "$RELEASE_CATEGORY" ]] && RELEASE_CATEGORY="Generally Available"
 
 for _field in COMPONENT_NAME REPO_URL REPO_BRANCH; do
   [[ -z "${!_field}" ]] && {
@@ -79,8 +83,9 @@ fi
 
 # --- Derive Quay vars ---
 eval "$(bash "$SCRIPTS_DIR/derive_quay_vars.sh" \
-  --product-context "$PRODUCT_CONTEXT" \
-  --component-name  "$COMPONENT_NAME")"
+  --product-context  "$PRODUCT_CONTEXT" \
+  --component-name   "$COMPONENT_NAME" \
+  --release-category "$RELEASE_CATEGORY")"
 # Sets: QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI
 
 # --- Update pipeline_state.json (if provided) ---
@@ -92,7 +97,8 @@ if [[ -n "$PIPELINE_STATE" && -f "$PIPELINE_STATE" ]]; then
     --arg qv "$QUAY_VISIBILITY" \
     --arg qr "$QUAY_REPO_URI" \
     --argjson io "${IS_OPERATOR}" \
-    '.component_name = $cn | .product_context = $pc | .quay_org = $qo | .quay_visibility = $qv | .quay_repo_uri = $qr | .is_operator = $io' \
+    --arg rc "$RELEASE_CATEGORY" \
+    '.component_name = $cn | .product_context = $pc | .quay_org = $qo | .quay_visibility = $qv | .quay_repo_uri = $qr | .is_operator = $io | .release_category = $rc' \
     "$PIPELINE_STATE" > "$PIPELINE_STATE.tmp" && mv "$PIPELINE_STATE.tmp" "$PIPELINE_STATE"
 
   # Mark non-applicable steps as skipped
@@ -115,14 +121,16 @@ Component : $COMPONENT_NAME
 Product   : $PRODUCT_CONTEXT
 Quay repo : $QUAY_REPO_URI ($QUAY_VISIBILITY)
 Operator  : $IS_OPERATOR
+Category  : $RELEASE_CATEGORY
 EOF
 
 # --- Emit eval-able exports ---
-printf 'COMPONENT_NAME=%q\n'   "$COMPONENT_NAME"
-printf 'IS_OPERATOR=%q\n'      "$IS_OPERATOR"
-printf 'REPO_URL=%q\n'         "$REPO_URL"
-printf 'REPO_BRANCH=%q\n'      "$REPO_BRANCH"
-printf 'PRODUCT_CONTEXT=%q\n'  "$PRODUCT_CONTEXT"
-printf 'QUAY_ORG=%q\n'         "$QUAY_ORG"
-printf 'QUAY_VISIBILITY=%q\n'  "$QUAY_VISIBILITY"
-printf 'QUAY_REPO_URI=%q\n'    "$QUAY_REPO_URI"
+printf 'COMPONENT_NAME=%q\n'    "$COMPONENT_NAME"
+printf 'IS_OPERATOR=%q\n'       "$IS_OPERATOR"
+printf 'REPO_URL=%q\n'          "$REPO_URL"
+printf 'REPO_BRANCH=%q\n'       "$REPO_BRANCH"
+printf 'PRODUCT_CONTEXT=%q\n'   "$PRODUCT_CONTEXT"
+printf 'QUAY_ORG=%q\n'          "$QUAY_ORG"
+printf 'QUAY_VISIBILITY=%q\n'   "$QUAY_VISIBILITY"
+printf 'QUAY_REPO_URI=%q\n'     "$QUAY_REPO_URI"
+printf 'RELEASE_CATEGORY=%q\n'  "$RELEASE_CATEGORY"

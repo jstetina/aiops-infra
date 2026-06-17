@@ -64,8 +64,9 @@ RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
 [[ -z "$RELEASE_CATEGORY" ]]  && RELEASE_CATEGORY="Generally Available"
 
 eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" \
-  --version "$TARGET_RHOAI_VERSION" \
-  --component "$COMPONENT_NAME")"
+  --version          "$TARGET_RHOAI_VERSION" \
+  --component        "$COMPONENT_NAME" \
+  --release-category "$RELEASE_CATEGORY")"
 # Sets: CONTENT_STREAM_TAG, REPOSITORY_NAME, and other version vars
 
 DISPLAY_NAME=$(echo "$COMPONENT_NAME" | tr '-' ' ' \
