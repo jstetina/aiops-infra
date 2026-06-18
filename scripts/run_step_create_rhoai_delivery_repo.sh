@@ -141,17 +141,7 @@ Adds a new repository entry to products/rhoai/rhoai.yaml:
   content_stream_tags: ['${CONTENT_STREAM_TAG}']
 
 Related: ${JIRA_ID}" \
-  --branch "$DEST_BRANCH" || {
-  # Retry after unshallow if push was rejected
-  if cd "$CLONE_DIR" && git fetch --unshallow origin 2>/dev/null; then
-    git push origin "$DEST_BRANCH" || {
-      echo "ERROR: Push failed after unshallow." >&2; exit 1
-    }
-    cd "$WORKDIR"
-  else
-    echo "ERROR: Could not push branch '$DEST_BRANCH'." >&2; exit 1
-  fi
-}
+  --branch "$DEST_BRANCH"
 
 # Raise MR (up to 3 attempts)
 MR_URL=""

@@ -54,6 +54,10 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
+# Ensure git identity is set; CI runners often have no global config
+git config --get user.email &>/dev/null || git config user.email "ci-bot@redhat.com"
+git config --get user.name  &>/dev/null || git config user.name  "CI Bot"
+
 git commit -m "$MESSAGE"
 
 # Push with retry logic
