@@ -44,14 +44,14 @@ fi
 YAML_FILE="$WORKDIR/component_onboarding_details.yaml"
 [[ ! -f "$YAML_FILE" ]] && { echo "ERROR: $YAML_FILE not found" >&2; exit 1; }
 
-COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}' | tr -d '"')
-TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' | tr -d '"')
+COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}' | tr -d "'\"" )
+TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' | tr -d "'\"" )
 SHORT_DESCRIPTION=$(grep -m1 'short_description:' "$YAML_FILE" \
   | sed 's/^[[:space:]]*short_description:[[:space:]]*//')
 LONG_DESCRIPTION=$(grep -m1 'long_description:' "$YAML_FILE" \
   | sed 's/^[[:space:]]*long_description:[[:space:]]*//')
 RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
-  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"')
+  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d "'\"" )
 
 [[ -z "$COMPONENT_NAME" ]] && {
   echo "ERROR: component_name missing from $YAML_FILE" >&2; exit 1

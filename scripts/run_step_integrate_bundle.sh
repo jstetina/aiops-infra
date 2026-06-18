@@ -46,7 +46,7 @@ eval "$(bash "$SCRIPTS_DIR/parse_component_details.sh" \
   --scripts-dir "$SCRIPTS_DIR")"
 # Sets: COMPONENT_NAME PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI IS_OPERATOR REPO_URL REPO_BRANCH
 
-TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' 2>/dev/null | tr -d '"' || echo "")
+TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' 2>/dev/null | tr -d "'\""  || echo "")
 
 if [[ "$PRODUCT_CONTEXT" == "RHOAI" && -z "$TARGET_RHOAI_VERSION" ]]; then
   echo "ERROR: target_rhoai_version required for RHOAI bundle integration but missing." >&2; exit 1

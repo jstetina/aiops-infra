@@ -44,7 +44,7 @@ IS_OPERATOR=$(grep -m1    'is_operator:'    "$YAML_FILE" | awk '{print $2}')
 REPO_URL=$(grep -m1       'repo_url:'       "$YAML_FILE" | awk '{print $2}')
 REPO_BRANCH=$(grep -m1    'repo_branch:'    "$YAML_FILE" | awk '{print $2}')
 RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
-  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"' || true)
+  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d "'\""  || true)
 [[ -z "$RELEASE_CATEGORY" ]] && RELEASE_CATEGORY="Generally Available"
 
 for _field in COMPONENT_NAME REPO_URL REPO_BRANCH; do
@@ -57,7 +57,7 @@ done
 # --- Derive PRODUCT_CONTEXT ---
 # Primary source: component_onboarding_details.yaml (authoritative).
 # Fallback: Jira key prefix, then Jira issue summary.
-YAML_PC=$(grep -m1 'product_context:' "$YAML_FILE" | awk '{print $2}' | tr -d '"' || true)
+YAML_PC=$(grep -m1 'product_context:' "$YAML_FILE" | awk '{print $2}' | tr -d "'\""  || true)
 YAML_PC="${YAML_PC^^}"  # normalise to uppercase
 
 if [[ "$YAML_PC" == "RHOAI" || "$YAML_PC" == "ODH" ]]; then

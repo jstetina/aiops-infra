@@ -47,7 +47,7 @@ COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}')
 }
 
 RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
-  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"' || true)
+  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d "'\""  || true)
 [[ -z "$RELEASE_CATEGORY" ]] && RELEASE_CATEGORY="Generally Available"
 
 # DevPreview (Beta) components use the rhoai-beta product line in Pyxis.
