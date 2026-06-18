@@ -95,9 +95,10 @@ else
 fi
 
 # Check if component already exists on cluster
+# Use || to prevent set -e from firing on exit 1 (component not found)
+CHECK_EXIT=0
 bash "$SCRIPTS_DIR/check_konflux_component.sh" \
-  "$KONFLUX_COMPONENT_NAME" "$KONFLUX_NAMESPACE" "$CLUSTER_INSTANCE"
-CHECK_EXIT=$?
+  "$KONFLUX_COMPONENT_NAME" "$KONFLUX_NAMESPACE" "$CLUSTER_INSTANCE" || CHECK_EXIT=$?
 if [[ "$CHECK_EXIT" -eq 0 ]]; then
   echo "Konflux Component '${KONFLUX_COMPONENT_NAME}' already exists in '${KONFLUX_NAMESPACE}'."
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
