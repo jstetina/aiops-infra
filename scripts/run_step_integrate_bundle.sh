@@ -152,11 +152,7 @@ bash "$SCRIPTS_DIR/git_commit_push.sh" \
   --clone-dir "$CLONE_DIR" \
   --files     "$FILES_CHANGED" \
   --message   "Add ${COMPONENT_NAME} to bundle relatedImages" \
-  --branch    "$DEST_BRANCH" || {
-  cd "$CLONE_DIR" || { echo "ERROR: Push failed — cannot cd to $CLONE_DIR." >&2; exit 1; }
-  git fetch --unshallow origin || { echo "ERROR: Push failed — git fetch --unshallow failed." >&2; exit 1; }
-  git push origin "$DEST_BRANCH" || { echo "ERROR: Push failed after unshallow." >&2; exit 1; }
-}
+  --branch    "$DEST_BRANCH"
 
 # Raise PR
 PR_URL=""
