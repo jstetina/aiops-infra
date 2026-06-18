@@ -46,7 +46,16 @@ COMPONENT_NAME=$(grep -m1 'component_name:' "$YAML_FILE" | awk '{print $2}')
   echo "ERROR: component_name missing from YAML." >&2; exit 1
 }
 
-PRODUCT_LISTING_ENTRY="registry.access.redhat.com/rhoai/${COMPONENT_NAME}-rhel9"
+RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
+  | sed 's/^[[:space:]]*release_category:[[:space:]]*//' | tr -d '"' || true)
+[[ -z "$RELEASE_CATEGORY" ]] && RELEASE_CATEGORY="Generally Available"
+
+# DevPreview (Beta) components use the rhoai-beta product line in Pyxis.
+# Appending -beta to the image name is rejected by cicada validation.
+PRODUCT_LINE="rhoai"
+[[ "$RELEASE_CATEGORY" == "Beta" ]] && PRODUCT_LINE="rhoai-beta"
+
+PRODUCT_LISTING_ENTRY="registry.access.redhat.com/${PRODUCT_LINE}/${COMPONENT_NAME}-rhel9"
 
 PYXIS_URL="${PYXIS_REPO_CONFIGS_REPO_URL:-https://gitlab.cee.redhat.com/releng/pyxis-repo-configs.git}"
 PYXIS_PATH=$(echo "$PYXIS_URL" | sed 's|https://gitlab.cee.redhat.com/||;s|\.git$||')
@@ -112,15 +121,11 @@ bash "$SCRIPTS_DIR/git_commit_push.sh" \
   --files     "product-listings/rhoai/rhoai.yaml" \
   --message   "Add ${COMPONENT_NAME} to RHOAI product listing
 
-Appends registry.access.redhat.com/rhoai/${COMPONENT_NAME}-rhel9 to the
+Appends ${PRODUCT_LISTING_ENTRY} to the
 repositories list in product-listings/rhoai/rhoai.yaml.
 
 Related: ${JIRA_ID}" \
-  --branch "$DEST_BRANCH" || {
-  cd "$CLONE_DIR" || { echo "ERROR: Push failed — cannot cd to $CLONE_DIR." >&2; exit 1; }
-  git fetch --unshallow origin || { echo "ERROR: Push failed — git fetch --unshallow failed." >&2; exit 1; }
-  git push origin "$DEST_BRANCH" || { echo "ERROR: Push failed after unshallow." >&2; exit 1; }
-}
+  --branch "$DEST_BRANCH"
 
 # Raise MR (up to 3 attempts)
 MR_URL=""

@@ -50,7 +50,7 @@ eval "$(bash "$SCRIPTS_DIR/parse_component_details.sh" \
   --workdir     "$WORKDIR" \
   --jira-id     "$JIRA_ID" \
   --scripts-dir "$SCRIPTS_DIR")"
-# Sets: COMPONENT_NAME PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI IS_OPERATOR REPO_URL REPO_BRANCH
+# Sets: COMPONENT_NAME PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI IS_OPERATOR REPO_URL REPO_BRANCH RELEASE_CATEGORY
 
 CONTEXT_PATH=$(grep -m1    'context_path:'    "$YAML_FILE" | awk '{print $2}')
 DOCKERFILE_PATH=$(grep -m1 'dockerfile_path:' "$YAML_FILE" | awk '{print $2}')

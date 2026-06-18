@@ -64,7 +64,7 @@ RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
 [[ -z "$RELEASE_CATEGORY" ]]  && RELEASE_CATEGORY="Generally Available"
 
 eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" \
-  --version "$TARGET_RHOAI_VERSION" \
+  --version   "$TARGET_RHOAI_VERSION" \
   --component "$COMPONENT_NAME")"
 # Sets: CONTENT_STREAM_TAG, REPOSITORY_NAME, and other version vars
 
@@ -140,17 +140,7 @@ Adds a new repository entry to products/rhoai/rhoai.yaml:
   content_stream_tags: ['${CONTENT_STREAM_TAG}']
 
 Related: ${JIRA_ID}" \
-  --branch "$DEST_BRANCH" || {
-  # Retry after unshallow if push was rejected
-  if cd "$CLONE_DIR" && git fetch --unshallow origin 2>/dev/null; then
-    git push origin "$DEST_BRANCH" || {
-      echo "ERROR: Push failed after unshallow." >&2; exit 1
-    }
-    cd "$WORKDIR"
-  else
-    echo "ERROR: Could not push branch '$DEST_BRANCH'." >&2; exit 1
-  fi
-}
+  --branch "$DEST_BRANCH"
 
 # Raise MR (up to 3 attempts)
 MR_URL=""

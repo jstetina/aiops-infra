@@ -21,7 +21,7 @@ COMPONENT_NAME=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)   TARGET_RHOAI_VERSION="$2"; shift 2 ;;
-    --component) COMPONENT_NAME="$2";        shift 2 ;;
+    --component) COMPONENT_NAME="$2";       shift 2 ;;
     *) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
   esac
 done
