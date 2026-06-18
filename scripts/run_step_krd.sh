@@ -52,9 +52,6 @@ eval "$(bash "$SCRIPTS_DIR/parse_component_details.sh" \
   --scripts-dir "$SCRIPTS_DIR")"
 # Sets: COMPONENT_NAME PRODUCT_CONTEXT QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI IS_OPERATOR REPO_URL REPO_BRANCH RELEASE_CATEGORY
 
-RHEL9_SUFFIX="-rhel9"
-[[ "$RELEASE_CATEGORY" == "Beta" ]] && RHEL9_SUFFIX="-rhel9-beta"
-
 CONTEXT_PATH=$(grep -m1    'context_path:'    "$YAML_FILE" | awk '{print $2}')
 DOCKERFILE_PATH=$(grep -m1 'dockerfile_path:' "$YAML_FILE" | awk '{print $2}')
 TARGET_RHOAI_VERSION=$(grep -m1 'target_rhoai_version:' "$YAML_FILE" | awk '{print $2}' 2>/dev/null | tr -d '"' || echo "")
@@ -220,7 +217,7 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
     build-nudges-ref:
       - odh-operator-{{.versionName}}
     componentName: COMPONENT_NAME_PLACEHOLDER-{{.versionName}}
-    containerImage: quay.io/rhoai/COMPONENT_NAME_PLACEHOLDERRHEL9_SUFFIX_PLACEHOLDER
+    containerImage: quay.io/rhoai/COMPONENT_NAME_PLACEHOLDER-rhel9
     source:
       git:
         context: CONTEXT_PATH_PLACEHOLDER
@@ -230,7 +227,6 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
 YAML_EOF
 )
     PDS_ENTRY="${PDS_ENTRY//COMPONENT_NAME_PLACEHOLDER/$COMPONENT_NAME}"
-    PDS_ENTRY="${PDS_ENTRY//RHEL9_SUFFIX_PLACEHOLDER/$RHEL9_SUFFIX}"
     PDS_ENTRY="${PDS_ENTRY//CONTEXT_PATH_PLACEHOLDER/$CONTEXT_PATH_NORMALIZED}"
     PDS_ENTRY="${PDS_ENTRY//DOCKERFILE_PATH_PLACEHOLDER/$DOCKERFILE_PATH}"
     PDS_ENTRY="${PDS_ENTRY//REPO_URL_PLACEHOLDER/$REPO_URL}"
@@ -250,7 +246,7 @@ YAML_EOF
       "$RPA_STAGE" \
       --array-key "spec.data.mapping.components" \
       --name "${COMPONENT_NAME}-${RPA_VAR}" \
-      --url "registry.stage.redhat.io/rhoai/${COMPONENT_NAME}${RHEL9_SUFFIX}" || {
+      --url "registry.stage.redhat.io/rhoai/${COMPONENT_NAME}-rhel9" || {
       echo "ERROR: Could not append to RPA stage file." >&2; exit 1
     }
   fi
@@ -265,7 +261,7 @@ YAML_EOF
       "$RPA_PROD" \
       --array-key "spec.data.mapping.components" \
       --name "${COMPONENT_NAME}-${RPA_VAR}" \
-      --url "registry.redhat.io/rhoai/${COMPONENT_NAME}${RHEL9_SUFFIX}" || {
+      --url "registry.redhat.io/rhoai/${COMPONENT_NAME}-rhel9" || {
       echo "ERROR: Could not append to RPA prod file." >&2; exit 1
     }
   fi

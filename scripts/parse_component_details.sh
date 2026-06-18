@@ -83,9 +83,8 @@ fi
 
 # --- Derive Quay vars ---
 eval "$(bash "$SCRIPTS_DIR/derive_quay_vars.sh" \
-  --product-context  "$PRODUCT_CONTEXT" \
-  --component-name   "$COMPONENT_NAME" \
-  --release-category "$RELEASE_CATEGORY")"
+  --product-context "$PRODUCT_CONTEXT" \
+  --component-name  "$COMPONENT_NAME")"
 # Sets: QUAY_ORG QUAY_VISIBILITY QUAY_REPO_URI
 
 # --- Update pipeline_state.json (if provided) ---
