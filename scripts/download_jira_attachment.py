@@ -69,7 +69,11 @@ def extract_issue_id(jira_url: str) -> str:
 
 
 def find_attachment(jira: JIRA, issue_id: str, filename: str):
-    """Find an attachment by exact filename. Exits with code 1 if not found."""
+    """Find an attachment by exact filename.
+
+    If multiple attachments share the same name, returns the most recently
+    created one. Exits with code 1 if no matching attachment is found.
+    """
     try:
         issue = jira.issue(issue_id)
     except JIRAError as e:
@@ -89,20 +93,40 @@ def find_attachment(jira: JIRA, issue_id: str, filename: str):
 
     attachments = getattr(issue.fields, "attachment", []) or []
 
-    for att in attachments:
-        if att.filename == filename:
-            return att
+    stem, _, ext = filename.rpartition(".")
+    ext = f".{ext}" if ext else ""
 
-    # Not found — list available attachments for debugging
-    available = sorted(att.filename for att in attachments)
-    print(f"ERROR: Attachment '{filename}' not found on issue {issue_id}.", file=sys.stderr)
-    if available:
-        print(f"Available attachments on {issue_id} ({len(available)} total):", file=sys.stderr)
-        for name in available:
-            print(f"  - {name}", file=sys.stderr)
-    else:
-        print(f"  No attachments found on {issue_id}.", file=sys.stderr)
-    sys.exit(1)
+    def is_match(att_filename: str) -> bool:
+        if att_filename == filename:
+            return True
+        # Jira appends " (UUID)" when uploading a file whose name already exists:
+        #   "foo.yaml" → "foo (uuid).yaml"
+        if stem and ext and att_filename.startswith(stem + " (") and att_filename.endswith(")" + ext):
+            return True
+        return False
+
+    matches = [att for att in attachments if is_match(att.filename)]
+
+    if not matches:
+        available = sorted(att.filename for att in attachments)
+        print(f"ERROR: Attachment '{filename}' not found on issue {issue_id}.", file=sys.stderr)
+        if available:
+            print(f"Available attachments on {issue_id} ({len(available)} total):", file=sys.stderr)
+            for name in available:
+                print(f"  - {name}", file=sys.stderr)
+        else:
+            print(f"  No attachments found on {issue_id}.", file=sys.stderr)
+        sys.exit(1)
+
+    matches.sort(key=lambda a: a.created, reverse=True)
+    best = matches[0]
+    if len(matches) > 1 or best.filename != filename:
+        print(
+            f"Found {len(matches)} attachment(s) matching '{filename}' on {issue_id}; "
+            f"using the most recent one: '{best.filename}' (created {best.created}).",
+            file=sys.stderr,
+        )
+    return best
 
 
 def download_attachment(jira: JIRA, attachment, output_filename: str) -> None:
