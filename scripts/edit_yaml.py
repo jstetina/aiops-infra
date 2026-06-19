@@ -9,6 +9,7 @@ YAML editing utility with ruamel.yaml (preserves comments and formatting).
 Subcommands:
   append-items-array      <file> --name <n> --description <d> [--public|--no-public]
   append-yaml-doc         <file> --yaml-string <str>
+  append-multidoc-list-item <file> --doc-kind <kind> --array-key <k> --yaml-string <str>
   insert-map-key          <file> --map-key <parent> --name <n> --src <s> --dest <d>
   append-array-entry      <file> --array-key <k> --name <n> --value <v> [--component <c>]
   insert-list-item        <file> --list-key <k> --value <v>
@@ -165,6 +166,46 @@ def cmd_append_yaml_doc(args):
     with path.open("w") as f:
         yaml.dump_all(docs, f)
     print(f"Appended YAML document to {path}")
+
+
+def cmd_append_multidoc_list_item(args):
+    """Append an item to a list within a specific document in a multi-document YAML file."""
+    path = Path(args.file)
+    yaml = _make_yaml(path)
+
+    new_item = yaml.load(args.yaml_string)
+
+    docs = []
+    with path.open() as f:
+        for doc in yaml.load_all(f):
+            docs.append(doc)
+
+    target_doc = None
+    for doc in docs:
+        if isinstance(doc, dict) and doc.get("kind") == args.doc_kind:
+            target_doc = doc
+            break
+
+    if target_doc is None:
+        print(f"ERROR: No document with kind='{args.doc_kind}' found in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    parts = args.array_key.split(".")
+    node = target_doc
+    for part in parts:
+        if part not in node or node[part] is None:
+            node[part] = []
+        node = node[part]
+
+    if not isinstance(node, list):
+        print(f"ERROR: '{args.array_key}' is not a list in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    node.append(new_item)
+
+    with path.open("w") as f:
+        yaml.dump_all(docs, f)
+    print(f"Appended item to '{args.array_key}' in document kind='{args.doc_kind}' in {path}")
 
 
 def cmd_insert_map_key(args):
@@ -385,6 +426,13 @@ def main():
     p2.add_argument("file")
     p2.add_argument("--yaml-string", required=True)
 
+    # append-multidoc-list-item
+    p2b = sub.add_parser("append-multidoc-list-item")
+    p2b.add_argument("file")
+    p2b.add_argument("--doc-kind", required=True)
+    p2b.add_argument("--array-key", required=True)
+    p2b.add_argument("--yaml-string", required=True)
+
     # insert-map-key
     p3 = sub.add_parser("insert-map-key")
     p3.add_argument("file")
@@ -432,6 +480,7 @@ def main():
     dispatch = {
         "append-items-array":      cmd_append_items_array,
         "append-yaml-doc":         cmd_append_yaml_doc,
+        "append-multidoc-list-item": cmd_append_multidoc_list_item,
         "insert-map-key":          cmd_insert_map_key,
         "append-array-entry":      cmd_append_array_entry,
         "insert-list-item":        cmd_insert_list_item,

@@ -206,33 +206,36 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
     echo "PDS entry already present — skipping."
   else
     PDS_ENTRY=$(cat <<'YAML_EOF'
-- apiVersion: appstudio.redhat.com/v1alpha1
-  kind: Component
-  metadata:
-    annotations:
-      build.appstudio.openshift.io/pipeline: '{"name":"docker-build-multi-platform-oci-ta","bundle":"latest"}'
-      build.appstudio.openshift.io/request: configure-pac-no-mr
-    name: COMPONENT_NAME_PLACEHOLDER-{{.versionName}}
-  spec:
-    application: rhoai-{{.versionName}}
-    build-nudges-ref:
-      - odh-operator-{{.versionName}}
-    componentName: COMPONENT_NAME_PLACEHOLDER-{{.versionName}}
-    containerImage: quay.io/rhoai/COMPONENT_NAME_PLACEHOLDER-rhel9
-    source:
-      git:
-        context: CONTEXT_PATH_PLACEHOLDER
-        dockerfileUrl: DOCKERFILE_PATH_PLACEHOLDER
-        revision: "{{.branch}}"
-        url: REPO_URL_PLACEHOLDER
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Component
+metadata:
+  annotations:
+    build.appstudio.openshift.io/pipeline: '{"name":"docker-build-multi-platform-oci-ta","bundle":"latest"}'
+    build.appstudio.openshift.io/request: configure-pac-no-mr
+  name: COMPONENT_NAME_PLACEHOLDER-{{.versionName}}
+spec:
+  application: rhoai-{{.versionName}}
+  build-nudges-ref:
+    - odh-operator-{{.versionName}}
+  componentName: COMPONENT_NAME_PLACEHOLDER-{{.versionName}}
+  containerImage: quay.io/rhoai/COMPONENT_NAME_PLACEHOLDER-rhel9
+  source:
+    git:
+      context: CONTEXT_PATH_PLACEHOLDER
+      dockerfileUrl: DOCKERFILE_PATH_PLACEHOLDER
+      revision: "{{.branch}}"
+      url: REPO_URL_PLACEHOLDER
 YAML_EOF
 )
     PDS_ENTRY="${PDS_ENTRY//COMPONENT_NAME_PLACEHOLDER/$COMPONENT_NAME}"
     PDS_ENTRY="${PDS_ENTRY//CONTEXT_PATH_PLACEHOLDER/$CONTEXT_PATH_NORMALIZED}"
     PDS_ENTRY="${PDS_ENTRY//DOCKERFILE_PATH_PLACEHOLDER/$DOCKERFILE_PATH}"
     PDS_ENTRY="${PDS_ENTRY//REPO_URL_PLACEHOLDER/$REPO_URL}"
-    uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-yaml-doc \
-      "$PDS_FILE" --yaml-string "$PDS_ENTRY" || {
+    uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-multidoc-list-item \
+      "$PDS_FILE" \
+      --doc-kind "ProjectDevelopmentStreamTemplate" \
+      --array-key "spec.resources" \
+      --yaml-string "$PDS_ENTRY" || {
       echo "ERROR: Could not append to ProjectDevelopmentStream file." >&2; exit 1
     }
   fi
