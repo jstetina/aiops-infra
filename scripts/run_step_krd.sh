@@ -108,7 +108,7 @@ if [[ "$CHECK_EXIT" -eq 0 ]]; then
     --state "$PIPELINE_STATE" --step krd --status done
   exit 2
 elif [[ "$CHECK_EXIT" -eq 2 ]]; then
-  echo "ERROR: Could not check Konflux component status. Check VPN and cluster tokens." >&2; exit 1
+  echo "WARN: Could not reach ${CLUSTER_INSTANCE} cluster to check if component exists. Proceeding with MR creation." >&2
 fi
 
 KRD_URL="${KONFLUX_RELEASE_DATA_REPO_URL:-https://gitlab.cee.redhat.com/releng/konflux-release-data.git}"
