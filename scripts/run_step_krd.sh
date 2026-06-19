@@ -16,6 +16,7 @@
 set -euo pipefail
 
 export PATH="${HOME}/.local/bin:${PATH}"
+export GIT_SSL_NO_VERIFY=true
 
 JIRA_URL=""
 while [[ $# -gt 0 ]]; do
