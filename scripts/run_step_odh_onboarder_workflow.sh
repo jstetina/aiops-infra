@@ -90,7 +90,6 @@ echo "Branch      : $REPO_BRANCH"
 # Build workflow inputs
 WORKFLOW_INPUTS=(
   "--input" "component=$COMPONENT"
-  "--input" "repo_url=$REPO_URL"
   "--input" "pr_target_branch=$REPO_BRANCH"
   "--input" "build_type=$BUILD_TYPE"
 )
