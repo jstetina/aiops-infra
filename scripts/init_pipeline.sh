@@ -81,6 +81,7 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
   # operator depends on bundle (both products)
   OPERATOR_DEPENDS_ON='["bundle"]'
 
+
   SKIP_RHOAI_ONLY="pending"
   SKIP_ODH_ONLY="pending"
   if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
@@ -187,7 +188,7 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
       "depends_on": ["krd", "okc"],
       "label_raised": "tekton-pr-raised",
       "label_done": "tekton-pr-merged"
-    }
+    },
   }
 }
 EOF
@@ -309,6 +310,7 @@ else
       echo "  bundle.depends_on: added okc (RHOAI prerequisite)" >&2
     fi
   fi
+
 
   # operator: add "bundle" if missing (both products)
   if ! jq -e '.steps.operator.depends_on | index("bundle") != null' "$PIPELINE_STATE" > /dev/null 2>&1; then

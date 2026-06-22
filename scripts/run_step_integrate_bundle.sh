@@ -61,7 +61,26 @@ eval "$(bash "$SCRIPTS_DIR/resolve_bc_url.sh" \
 echo "BC_URL : $BC_URL"
 
 if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
-  eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" --version "$TARGET_RHOAI_VERSION")"
+  _VERSION_OUTPUT=$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" --version "$TARGET_RHOAI_VERSION" 2>&1) || {
+    echo "ERROR: Could not parse target_rhoai_version '${TARGET_RHOAI_VERSION}'."
+    echo "$_VERSION_OUTPUT"
+    exit 1
+  }
+  eval "$_VERSION_OUTPUT"
+fi
+
+# ── Konflux build verification (prerequisite for bundle) ──────────────────────
+# Verify at least one push build succeeded before adding to build config.
+BV_OUTPUT=$(bash "$SCRIPTS_DIR/verify_build.sh" \
+  --jira-url        "$JIRA_URL" \
+  --component-name  "$COMPONENT_NAME" \
+  --product-context "$PRODUCT_CONTEXT" \
+  --version-var     "${VERSION_VAR:-}" 2>&1)
+BV_EXIT=$?
+echo "$BV_OUTPUT"
+if [[ "$BV_EXIT" -ne 0 ]]; then
+  echo "ERROR: Bundle integration blocked — Konflux build verification failed. See details above."
+  exit 1
 fi
 
 # Resolve related image
