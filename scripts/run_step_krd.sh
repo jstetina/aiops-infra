@@ -68,11 +68,11 @@ fi
 if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
   CLUSTER_INSTANCE="internal"
   KONFLUX_NAMESPACE="rhoai-tenant"
-  SPARSE_PATHS="tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant tenants-config/auto-generated/cluster/stone-prod-p02/tenants/rhoai-tenant config/stone-prod-p02.hjvn.p1/product/ReleasePlanAdmission/rhoai"
+  SPARSE_PATHS="tenants-config/cluster/stone-prod-p02/tenants/rhoai-tenant tenants-config/auto-generated/cluster/stone-prod-p02/tenants/rhoai-tenant config/stone-prod-p02.hjvn.p1/product/ReleasePlanAdmission/rhoai tenants-config/version"
 else
   CLUSTER_INSTANCE="external"
   KONFLUX_NAMESPACE="open-data-hub-tenant"
-  SPARSE_PATHS="tenants-config/cluster/stone-prd-rh01/tenants/open-data-hub-tenant tenants-config/auto-generated/cluster/stone-prd-rh01/tenants/open-data-hub-tenant"
+  SPARSE_PATHS="tenants-config/cluster/stone-prd-rh01/tenants/open-data-hub-tenant tenants-config/auto-generated/cluster/stone-prd-rh01/tenants/open-data-hub-tenant tenants-config/version"
 fi
 
 # Derive KONFLUX_COMPONENT_NAME
