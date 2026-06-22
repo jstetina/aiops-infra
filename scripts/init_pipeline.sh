@@ -182,13 +182,18 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
       "depends_on": ["renovate"],
       "label_done": "renovate-sync-triggered"
     },
+    "validate_release": {
+      "status": "${SKIP_ODH_ONLY}",
+      "depends_on": ["bundle"],
+      "label_done": "release-validation-passed"
+    },
     "onboarder_workflow": {
       "status": "${SKIP_ODH_ONLY}",
       "pr_url": "",
       "depends_on": ["krd", "okc"],
       "label_raised": "tekton-pr-raised",
       "label_done": "tekton-pr-merged"
-    },
+    }
   }
 }
 EOF
@@ -318,6 +323,18 @@ else
     jq '.steps.operator.depends_on = ((.steps.operator.depends_on // []) + ["bundle"] | unique)' \
       "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
     echo "  operator.depends_on: added bundle (prerequisite)" >&2
+  fi
+
+  # validate_release: add for RHOAI if missing from old state files
+  if ! jq -e '.steps.validate_release' "$PIPELINE_STATE" > /dev/null 2>&1; then
+    TMP=$(mktemp)
+    PC=$(jq -r '.product_context // ""' "$PIPELINE_STATE")
+    VR_STATUS="skipped"
+    [[ "$PC" == "RHOAI" ]] && VR_STATUS="pending"
+    jq --arg s "$VR_STATUS" \
+      '.steps.validate_release = {"status": $s, "depends_on": ["bundle"], "label_done": "release-validation-passed"}' \
+      "$PIPELINE_STATE" > "$TMP" && mv "$TMP" "$PIPELINE_STATE"
+    echo "  validate_release step added (status=$VR_STATUS)" >&2
   fi
 fi
 
