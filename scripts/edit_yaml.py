@@ -16,6 +16,7 @@ Subcommands:
   append-rpa-component    <file> --array-key <k> --name <n> --url <u>
   insert-simple-map-entry <file> --map-key <dot.path.0.nested> --key <k> --value <v>
   append-renovate-repo    <file> --renovate-config <cfg> --name <entry>
+  append-build-config-component <file> --component-name <n> --repo-url <u> [--version-var <v>] [--repo-branch <b>]
 """
 import argparse
 import sys
@@ -346,6 +347,30 @@ def cmd_insert_list_item(args):
     print(f"Inserted '{args.value}' into '{args.list_key}' in {path}")
 
 
+def cmd_append_build_config_component(args):
+    """Append a repo_mappings entry {source_repo, build_image} to build-config.yaml."""
+    path = Path(args.file)
+    yaml = _make_yaml(path)
+    data = _load(path, yaml)
+
+    if "repo_mappings" not in data or data["repo_mappings"] is None:
+        data["repo_mappings"] = []
+
+    mappings = data["repo_mappings"]
+    if not isinstance(mappings, list):
+        print(f"ERROR: 'repo_mappings' is not a list in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    existing = [m.get("build_image", "") for m in mappings if isinstance(m, dict)]
+    if args.component_name in existing:
+        print(f"'{args.component_name}' already present in repo_mappings — skipping.")
+        return
+
+    mappings.append({"source_repo": args.repo_url, "build_image": args.component_name})
+    _save(path, data, yaml)
+    print(f"Appended '{args.component_name}' to repo_mappings in {path}")
+
+
 def cmd_append_renovate_repo(args):
     """Append a sync-repositories entry to the first matching renovate distribution group."""
     path = Path(args.file)
@@ -469,6 +494,14 @@ def main():
     p7.add_argument("--key", required=True)
     p7.add_argument("--value", required=True)
 
+    # append-build-config-component
+    p_bc = sub.add_parser("append-build-config-component")
+    p_bc.add_argument("file")
+    p_bc.add_argument("--component-name", required=True)
+    p_bc.add_argument("--repo-url", required=True)
+    p_bc.add_argument("--version-var", default="")
+    p_bc.add_argument("--repo-branch", default="")
+
     # append-renovate-repo
     p8 = sub.add_parser("append-renovate-repo")
     p8.add_argument("file")
@@ -487,6 +520,7 @@ def main():
         "append-rpa-component":    cmd_append_rpa_component,
         "insert-simple-map-entry": cmd_insert_simple_map_entry,
         "append-renovate-repo":    cmd_append_renovate_repo,
+        "append-build-config-component": cmd_append_build_config_component,
     }
     dispatch[args.command](args)
 
