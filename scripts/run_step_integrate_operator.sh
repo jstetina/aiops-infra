@@ -105,13 +105,12 @@ if grep -qF "$COMPONENT_NAME" "$MANIFESTS_CONFIG" 2>/dev/null; then
 fi
 
 # Append manifests entry
-uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-operator-component \
+uv run --script "$SCRIPTS_DIR/edit_yaml.py" insert-map-key \
   "$MANIFESTS_CONFIG" \
-  --component-name          "$COMPONENT_NAME" \
-  --repo-url                "$REPO_URL" \
-  --repo-branch             "$REPO_BRANCH" \
-  ${OPERATOR_MANIFEST_SRC_PATH:+--manifest-src-path  "$OPERATOR_MANIFEST_SRC_PATH"} \
-  ${OPERATOR_MANIFEST_DEST_PATH:+--manifest-dest-path "$OPERATOR_MANIFEST_DEST_PATH"} || {
+  --map-key "map" \
+  --name "$COMPONENT_NAME" \
+  --src  "${OPERATOR_MANIFEST_SRC_PATH:-config/manifests}" \
+  --dest "${OPERATOR_MANIFEST_DEST_PATH:-opt/manifests/$COMPONENT_NAME}" || {
   echo "ERROR: Could not append to build/manifests-config.yaml." >&2; exit 1
 }
 
