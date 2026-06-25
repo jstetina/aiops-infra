@@ -58,7 +58,19 @@ fi
 echo "Verifying Konflux build for '${KONFLUX_COMPONENT}' in '${NAMESPACE}'..."
 
 # ── Cluster login ─────────────────────────────────────────────────────────────
-if ! oc whoami &>/dev/null 2>&1; then
+# Always call login_to_konflux_cluster.sh for the target cluster instance.
+# A bare "oc whoami" check is insufficient — the session may be authenticated
+# against a *different* cluster, producing wrong KubeArchive URLs and silent
+# curl failures.
+if [[ "$CLUSTER_INSTANCE" == "external" ]]; then
+  EXPECTED_API="https://api.stone-prd-rh01.pg1f.p1.openshiftapps.com:6443"
+else
+  EXPECTED_API="https://api.stone-prod-p02.hjvn.p1.openshiftapps.com:6443"
+fi
+
+CURRENT_SERVER=$(oc whoami --show-server 2>/dev/null || echo "")
+if [[ "${CURRENT_SERVER%/}" != "${EXPECTED_API%/}" ]]; then
+  echo "Current oc context (${CURRENT_SERVER:-none}) does not match target ($EXPECTED_API). Logging in..." >&2
   bash "$SCRIPTS_DIR/login_to_konflux_cluster.sh" "$CLUSTER_INSTANCE" || {
     echo "ERROR: Could not log in to $CLUSTER_INSTANCE cluster. Check EXT_OC_TOKEN/INT_OC_TOKEN." >&2
     exit 1
@@ -76,13 +88,28 @@ KUBEARCHIVE_BASE="https://kubearchive-api-server-product-kubearchive.apps${CLUST
 LABEL="appstudio.openshift.io/component=${KONFLUX_COMPONENT},pipelinesascode.tekton.dev/event-type in (push,incoming,retest-comment)"
 LABEL_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$LABEL")
 
-RESULTS=$(curl -sfk \
+echo "KubeArchive : ${KUBEARCHIVE_BASE}" >&2
+RESULTS=$(curl -sk -w '%{http_code}' -o /dev/stdout \
   -H "Authorization: Bearer $OC_TOKEN" \
   -H "Accept: application/json" \
   "${KUBEARCHIVE_BASE}/apis/tekton.dev/v1/namespaces/${NAMESPACE}/pipelineruns?labelSelector=${LABEL_ENC}&limit=10" \
-  2>/dev/null || echo '{"items":[]}')
+  2>/dev/null) || {
+  echo "ERROR: curl to KubeArchive failed (network error or unreachable)." >&2
+  echo "  URL: ${KUBEARCHIVE_BASE}/apis/tekton.dev/v1/namespaces/${NAMESPACE}/pipelineruns" >&2
+  exit 1
+}
 
-COUNT=$(echo "$RESULTS" | jq '.items | length')
+HTTP_CODE="${RESULTS: -3}"
+RESULTS="${RESULTS:0:${#RESULTS}-3}"
+
+if [[ "$HTTP_CODE" != "200" ]]; then
+  echo "ERROR: KubeArchive returned HTTP $HTTP_CODE." >&2
+  echo "  URL: ${KUBEARCHIVE_BASE}/apis/tekton.dev/v1/namespaces/${NAMESPACE}/pipelineruns" >&2
+  echo "  Response: ${RESULTS:0:500}" >&2
+  exit 1
+fi
+
+COUNT=$(echo "$RESULTS" | jq '.items | length' 2>/dev/null || echo "0")
 
 if [[ "$COUNT" -eq 0 ]]; then
   echo "ERROR: No push build found for '${KONFLUX_COMPONENT}' — build has not run yet." >&2
