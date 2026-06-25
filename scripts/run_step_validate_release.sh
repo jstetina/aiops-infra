@@ -15,7 +15,7 @@ set -euo pipefail
 export PATH="${HOME}/.local/bin:${PATH}"
 
 JIRA_URL=""
-TIMEOUT_MINUTES=30
+TIMEOUT_MINUTES=10
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --jira-url) JIRA_URL="$2"; shift 2 ;;
