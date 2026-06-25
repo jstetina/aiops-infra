@@ -24,6 +24,19 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 
+def _validated_path(raw: str) -> Path:
+    """Resolve and validate that the file path stays within cwd and is a YAML file."""
+    path = Path(raw).resolve()
+    workspace = Path.cwd().resolve()
+    if not path.is_relative_to(workspace):
+        print(f"ERROR: file path escapes workspace: {path}", file=sys.stderr)
+        sys.exit(1)
+    if path.suffix not in {".yaml", ".yml"}:
+        print(f"ERROR: expected .yaml/.yml file: {path}", file=sys.stderr)
+        sys.exit(1)
+    return path
+
+
 def _detect_formatting(path: Path) -> dict:
     """Detect explicit_start and sequence indent from an existing YAML file."""
     import re
@@ -134,7 +147,7 @@ def _save(path: Path, data, yaml: YAML):
 
 def cmd_append_items_array(args):
     """Append an entry to a top-level 'items' sequence."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -153,7 +166,7 @@ def cmd_append_items_array(args):
 
 def cmd_append_yaml_doc(args):
     """Append a YAML document block to a multi-document YAML file."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
 
     new_doc = yaml.load(args.yaml_string)
@@ -171,7 +184,7 @@ def cmd_append_yaml_doc(args):
 
 def cmd_append_multidoc_list_item(args):
     """Append an item to a list within a specific document in a multi-document YAML file."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
 
     new_item = yaml.load(args.yaml_string)
@@ -211,7 +224,7 @@ def cmd_append_multidoc_list_item(args):
 
 def cmd_insert_map_key(args):
     """Insert a key into a nested map at the given parent key."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -230,7 +243,7 @@ def cmd_insert_map_key(args):
 
 def cmd_append_array_entry(args):
     """Append an object entry to a nested array."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -256,7 +269,7 @@ def cmd_append_array_entry(args):
 
 def cmd_append_rpa_component(args):
     """Append a ReleasePlanAdmission component entry {name, repositories: [{url}]} to a nested array."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -278,7 +291,7 @@ def cmd_append_rpa_component(args):
 
 def cmd_insert_simple_map_entry(args):
     """Set a simple key=value string pair in a nested map (supports integer indices in dot-path)."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -320,7 +333,7 @@ def _resolve_key(node, part):
 
 def cmd_insert_list_item(args):
     """Insert a scalar value into a list at the given key."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -349,7 +362,7 @@ def cmd_insert_list_item(args):
 
 def cmd_append_build_config_component(args):
     """Add a component_name: component_name entry to config.replacements[0].repo_mappings."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -380,7 +393,7 @@ def cmd_append_build_config_component(args):
 
 def cmd_append_renovate_repo(args):
     """Append a sync-repositories entry to the first matching renovate distribution group."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
