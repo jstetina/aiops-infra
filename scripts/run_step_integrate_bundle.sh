@@ -139,8 +139,7 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
   if [[ -f "$BC_CONFIG" ]] && ! grep -qF "$COMPONENT_NAME" "$BC_CONFIG" 2>/dev/null; then
     uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-build-config-component \
       "$BC_CONFIG" \
-      --component-name "$COMPONENT_NAME" \
-      --version-var    "${VERSION_VAR:-}" \
+      --component-name "${QUAY_ORG}/${COMPONENT_NAME}-rhel9" \
       --repo-url       "$REPO_URL" \
       --repo-branch    "$REPO_BRANCH" 2>/dev/null || true
     FILES_CHANGED="$FILES_CHANGED config/build-config.yaml"

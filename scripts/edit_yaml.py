@@ -16,7 +16,7 @@ Subcommands:
   append-rpa-component    <file> --array-key <k> --name <n> --url <u>
   insert-simple-map-entry <file> --map-key <dot.path.0.nested> --key <k> --value <v>
   append-renovate-repo    <file> --renovate-config <cfg> --name <entry>
-  append-build-config-component <file> --component-name <n> --repo-url <u> [--version-var <v>] [--repo-branch <b>]
+  append-build-config-component <file> --component-name <n> [--repo-url <u>] [--version-var <v>] [--repo-branch <b>]
 """
 import argparse
 import sys
@@ -348,27 +348,34 @@ def cmd_insert_list_item(args):
 
 
 def cmd_append_build_config_component(args):
-    """Append a repo_mappings entry {source_repo, build_image} to build-config.yaml."""
+    """Add a component_name: component_name entry to config.replacements[0].repo_mappings."""
     path = Path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
-    if "repo_mappings" not in data or data["repo_mappings"] is None:
-        data["repo_mappings"] = []
+    try:
+        mappings = data["config"]["replacements"][0]["repo_mappings"]
+    except (KeyError, IndexError, TypeError):
+        mappings = None
 
-    mappings = data["repo_mappings"]
-    if not isinstance(mappings, list):
-        print(f"ERROR: 'repo_mappings' is not a list in {path}", file=sys.stderr)
+    if mappings is None:
+        data.setdefault("config", {}).setdefault("replacements", [{}])
+        if not data["config"]["replacements"]:
+            data["config"]["replacements"].append({})
+        data["config"]["replacements"][0]["repo_mappings"] = {}
+        mappings = data["config"]["replacements"][0]["repo_mappings"]
+
+    if not isinstance(mappings, dict):
+        print(f"ERROR: 'config.replacements[0].repo_mappings' is not a map in {path}", file=sys.stderr)
         sys.exit(1)
 
-    existing = [m.get("build_image", "") for m in mappings if isinstance(m, dict)]
-    if args.component_name in existing:
+    if args.component_name in mappings:
         print(f"'{args.component_name}' already present in repo_mappings — skipping.")
         return
 
-    mappings.append({"source_repo": args.repo_url, "build_image": args.component_name})
+    mappings[args.component_name] = args.component_name
     _save(path, data, yaml)
-    print(f"Appended '{args.component_name}' to repo_mappings in {path}")
+    print(f"Added '{args.component_name}' to repo_mappings in {path}")
 
 
 def cmd_append_renovate_repo(args):
@@ -498,7 +505,7 @@ def main():
     p_bc = sub.add_parser("append-build-config-component")
     p_bc.add_argument("file")
     p_bc.add_argument("--component-name", required=True)
-    p_bc.add_argument("--repo-url", required=True)
+    p_bc.add_argument("--repo-url", default="")
     p_bc.add_argument("--version-var", default="")
     p_bc.add_argument("--repo-branch", default="")
 
