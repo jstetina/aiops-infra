@@ -71,17 +71,18 @@ fi
 
 # ── Konflux build verification (prerequisite for bundle) ──────────────────────
 # Verify at least one push build succeeded before adding to build config.
+# The || { } guard prevents set -e from killing the script before we can print
+# the captured output and a meaningful error message.
 BV_OUTPUT=$(bash "$SCRIPTS_DIR/verify_build.sh" \
   --jira-url        "$JIRA_URL" \
   --component-name  "$COMPONENT_NAME" \
   --product-context "$PRODUCT_CONTEXT" \
-  --version-var     "${VERSION_VAR:-}" 2>&1)
-BV_EXIT=$?
-echo "$BV_OUTPUT"
-if [[ "$BV_EXIT" -ne 0 ]]; then
+  --version-var     "${VERSION_VAR:-}" 2>&1) || {
+  echo "$BV_OUTPUT"
   echo "ERROR: Bundle integration blocked — Konflux build verification failed. See details above."
   exit 1
-fi
+}
+echo "$BV_OUTPUT"
 
 # Resolve related image
 if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
