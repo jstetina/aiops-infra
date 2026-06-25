@@ -210,7 +210,7 @@ ${PLATFORM_LIST}
       value: pipelines/multi-arch-container-build.yaml
     resolver: git
   taskRunTemplate:
-    serviceAccountName: build-pipeline-push-pipelines
+    serviceAccountName: build-pipeline-${COMPONENT_NAME}-${VERSION_VAR}
     podTemplate:
       imagePullSecrets:
       - name: redhat-appstudio-staginguser-pull-secret
