@@ -346,6 +346,29 @@ def cmd_insert_list_item(args):
     print(f"Inserted '{args.value}' into '{args.list_key}' in {path}")
 
 
+def cmd_append_operator_component(args):
+    """Append a component entry {src, dest} under the 'map' key in manifests-config.yaml."""
+    path = Path(args.file)
+    yaml = _make_yaml(path)
+    data = _load(path, yaml)
+
+    if "map" not in data or data["map"] is None:
+        data["map"] = {}
+
+    mapping = data["map"]
+    if not isinstance(mapping, dict):
+        print(f"ERROR: 'map' is not a mapping in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.component_name in mapping:
+        print(f"'{args.component_name}' already present in map — skipping.")
+        return
+
+    mapping[args.component_name] = {"src": args.src, "dest": args.dest}
+    _save(path, data, yaml)
+    print(f"Appended '{args.component_name}' to map in {path}")
+
+
 def cmd_append_renovate_repo(args):
     """Append a sync-repositories entry to the first matching renovate distribution group."""
     path = Path(args.file)
@@ -469,6 +492,13 @@ def main():
     p7.add_argument("--key", required=True)
     p7.add_argument("--value", required=True)
 
+    # append-operator-component
+    p_oc = sub.add_parser("append-operator-component")
+    p_oc.add_argument("file")
+    p_oc.add_argument("--component-name", required=True)
+    p_oc.add_argument("--src", required=True)
+    p_oc.add_argument("--dest", required=True)
+
     # append-renovate-repo
     p8 = sub.add_parser("append-renovate-repo")
     p8.add_argument("file")
@@ -486,6 +516,7 @@ def main():
         "insert-list-item":        cmd_insert_list_item,
         "append-rpa-component":    cmd_append_rpa_component,
         "insert-simple-map-entry": cmd_insert_simple_map_entry,
+        "append-operator-component": cmd_append_operator_component,
         "append-renovate-repo":    cmd_append_renovate_repo,
     }
     dispatch[args.command](args)
