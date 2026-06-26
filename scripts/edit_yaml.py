@@ -16,11 +16,25 @@ Subcommands:
   append-rpa-component    <file> --array-key <k> --name <n> --url <u>
   insert-simple-map-entry <file> --map-key <dot.path.0.nested> --key <k> --value <v>
   append-renovate-repo    <file> --renovate-config <cfg> --name <entry>
+  append-build-config-component <file> --component-name <n> [--repo-url <u>] [--version-var <v>] [--repo-branch <b>]
 """
 import argparse
 import sys
 from pathlib import Path
 from ruamel.yaml import YAML
+
+
+def _validated_path(raw: str) -> Path:
+    """Resolve and validate that the file path stays within cwd and is a YAML file."""
+    path = Path(raw).resolve()
+    workspace = Path.cwd().resolve()
+    if not path.is_relative_to(workspace):
+        print(f"ERROR: file path escapes workspace: {path}", file=sys.stderr)
+        sys.exit(1)
+    if path.suffix not in {".yaml", ".yml"}:
+        print(f"ERROR: expected .yaml/.yml file: {path}", file=sys.stderr)
+        sys.exit(1)
+    return path
 
 
 def _detect_formatting(path: Path) -> dict:
@@ -133,7 +147,7 @@ def _save(path: Path, data, yaml: YAML):
 
 def cmd_append_items_array(args):
     """Append an entry to a top-level 'items' sequence."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -152,7 +166,7 @@ def cmd_append_items_array(args):
 
 def cmd_append_yaml_doc(args):
     """Append a YAML document block to a multi-document YAML file."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
 
     new_doc = yaml.load(args.yaml_string)
@@ -170,7 +184,7 @@ def cmd_append_yaml_doc(args):
 
 def cmd_append_multidoc_list_item(args):
     """Append an item to a list within a specific document in a multi-document YAML file."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
 
     new_item = yaml.load(args.yaml_string)
@@ -210,7 +224,7 @@ def cmd_append_multidoc_list_item(args):
 
 def cmd_insert_map_key(args):
     """Insert a key into a nested map at the given parent key."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -229,7 +243,7 @@ def cmd_insert_map_key(args):
 
 def cmd_append_array_entry(args):
     """Append an object entry to a nested array."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -255,7 +269,7 @@ def cmd_append_array_entry(args):
 
 def cmd_append_rpa_component(args):
     """Append a ReleasePlanAdmission component entry {name, repositories: [{url}]} to a nested array."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -277,7 +291,7 @@ def cmd_append_rpa_component(args):
 
 def cmd_insert_simple_map_entry(args):
     """Set a simple key=value string pair in a nested map (supports integer indices in dot-path)."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -319,7 +333,7 @@ def _resolve_key(node, part):
 
 def cmd_insert_list_item(args):
     """Insert a scalar value into a list at the given key."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -346,9 +360,40 @@ def cmd_insert_list_item(args):
     print(f"Inserted '{args.value}' into '{args.list_key}' in {path}")
 
 
+def cmd_append_build_config_component(args):
+    """Add a component_name: component_name entry to config.replacements[0].repo_mappings."""
+    path = _validated_path(args.file)
+    yaml = _make_yaml(path)
+    data = _load(path, yaml)
+
+    try:
+        mappings = data["config"]["replacements"][0]["repo_mappings"]
+    except (KeyError, IndexError, TypeError):
+        mappings = None
+
+    if mappings is None:
+        data.setdefault("config", {}).setdefault("replacements", [{}])
+        if not data["config"]["replacements"]:
+            data["config"]["replacements"].append({})
+        data["config"]["replacements"][0]["repo_mappings"] = {}
+        mappings = data["config"]["replacements"][0]["repo_mappings"]
+
+    if not isinstance(mappings, dict):
+        print(f"ERROR: 'config.replacements[0].repo_mappings' is not a map in {path}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.component_name in mappings:
+        print(f"'{args.component_name}' already present in repo_mappings — skipping.")
+        return
+
+    mappings[args.component_name] = args.component_name
+    _save(path, data, yaml)
+    print(f"Added '{args.component_name}' to repo_mappings in {path}")
+
+
 def cmd_append_renovate_repo(args):
     """Append a sync-repositories entry to the first matching renovate distribution group."""
-    path = Path(args.file)
+    path = _validated_path(args.file)
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
@@ -469,6 +514,14 @@ def main():
     p7.add_argument("--key", required=True)
     p7.add_argument("--value", required=True)
 
+    # append-build-config-component
+    p_bc = sub.add_parser("append-build-config-component")
+    p_bc.add_argument("file")
+    p_bc.add_argument("--component-name", required=True)
+    p_bc.add_argument("--repo-url", default="")
+    p_bc.add_argument("--version-var", default="")
+    p_bc.add_argument("--repo-branch", default="")
+
     # append-renovate-repo
     p8 = sub.add_parser("append-renovate-repo")
     p8.add_argument("file")
@@ -487,6 +540,7 @@ def main():
         "append-rpa-component":    cmd_append_rpa_component,
         "insert-simple-map-entry": cmd_insert_simple_map_entry,
         "append-renovate-repo":    cmd_append_renovate_repo,
+        "append-build-config-component": cmd_append_build_config_component,
     }
     dispatch[args.command](args)
 
