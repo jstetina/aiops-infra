@@ -116,7 +116,7 @@ fi
 # Update bundle-patch.yaml — add relatedImages entry
 uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-array-entry \
   "$BUNDLE_PATCH" \
-  --array-key relatedImages \
+  --array-key patch.relatedImages \
   --name      "$RELATED_IMAGE_NAME" \
   --value     "$RELATED_IMAGE_VALUE" || {
   echo "ERROR: Could not update bundle-patch.yaml." >&2; exit 1
