@@ -247,12 +247,12 @@ def cmd_append_array_entry(args):
     yaml = _make_yaml(path)
     data = _load(path, yaml)
 
-    # Navigate dot-path to the array
+    # Navigate dot-path to the array (intermediate keys become dicts, leaf becomes list)
     parts = args.array_key.split(".")
     node = data
-    for part in parts:
+    for i, part in enumerate(parts):
         if part not in node or node[part] is None:
-            node[part] = []
+            node[part] = [] if i == len(parts) - 1 else {}
         node = node[part]
 
     if not isinstance(node, list):
