@@ -146,17 +146,19 @@ def main():
     else:
         print("  No known description table found — skipping table update.")
 
-    # --- Add label ---
-    label = "component-onboarding"
-    if label not in current_labels:
-        try:
-            payload = json.dumps({"fields": {"labels": current_labels + [label]}}).encode()
-            jira_request(api_base, method="PUT", data=payload, email=email, token=token)
-            print(f"  Label added: {label}")
-        except Exception as exc:
-            warnings.append(f"WARN: Could not add '{label}' label ({exc}). Add manually.")
-    else:
-        print(f"  Label already present: {label}")
+    # --- Add labels ---
+    labels_to_add = ["component-onboarding", "devops-onboarding"]
+    for label in labels_to_add:
+        if label not in current_labels:
+            try:
+                payload = json.dumps({"fields": {"labels": current_labels + [label]}}).encode()
+                jira_request(api_base, method="PUT", data=payload, email=email, token=token)
+                current_labels.append(label)
+                print(f"  Label added: {label}")
+            except Exception as exc:
+                warnings.append(f"WARN: Could not add '{label}' label ({exc}). Add manually.")
+        else:
+            print(f"  Label already present: {label}")
 
     for w in warnings:
         print(w)
