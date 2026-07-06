@@ -64,7 +64,7 @@ def main():
         dockerfile_link = f"{args.repo_url}/blob/{args.repo_branch}/{args.dockerfile_path}"
 
     # Fetch current issue fields
-    _, issue = jira_request(f"{api_base}?fields=summary,description,labels,customfield_10855", email=email, token=token)
+    _, issue = jira_request(f"{api_base}?fields=summary,description,labels,components,customfield_10855", email=email, token=token)
     current_summary = issue["fields"]["summary"]
     description = issue["fields"].get("description") or ""
     current_labels = issue["fields"].get("labels") or []
@@ -171,6 +171,19 @@ def main():
                 )
         except Exception as exc:
             warnings.append(f"WARN: Could not set Target Version '{target_version_name}' ({exc}). Set manually in Jira.")
+
+    # --- Ensure DevOps component is present ---
+    current_components = issue["fields"].get("components") or []
+    current_component_names = {c["name"] for c in current_components}
+    if "DevOps" not in current_component_names:
+        try:
+            payload = json.dumps({"update": {"components": [{"add": {"name": "DevOps"}}]}}).encode()
+            jira_request(api_base, method="PUT", data=payload, email=email, token=token)
+            print("  Component added: DevOps")
+        except Exception as exc:
+            warnings.append(f"WARN: Could not add 'DevOps' component ({exc}). Add manually.")
+    else:
+        print("  Component already present: DevOps")
 
     # --- Add labels ---
     labels_to_add = ["component-onboarding", "devops-onboarding"]
