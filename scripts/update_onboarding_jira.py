@@ -64,7 +64,7 @@ def main():
         dockerfile_link = f"{args.repo_url}/blob/{args.repo_branch}/{args.dockerfile_path}"
 
     # Fetch current issue fields
-    _, issue = jira_request(f"{api_base}?fields=summary,description,labels", email=email, token=token)
+    _, issue = jira_request(f"{api_base}?fields=summary,description,labels,customfield_10855", email=email, token=token)
     current_summary = issue["fields"]["summary"]
     description = issue["fields"].get("description") or ""
     current_labels = issue["fields"].get("labels") or []
@@ -145,6 +145,32 @@ def main():
             )
     else:
         print("  No known description table found — skipping table update.")
+
+    # --- Set Target Version (RHOAI only) ---
+    if args.product_context == "RHOAI":
+        target_version_name = args.repo_branch
+        try:
+            _, project_versions = jira_request(
+                f"{jira_server}/rest/api/2/project/{jira_id.split('-')[0]}/versions",
+                email=email, token=token,
+            )
+            valid_names = {v["name"] for v in project_versions}
+            if target_version_name in valid_names:
+                current_tv = issue["fields"].get("customfield_10855") or []
+                current_tv_names = {v["name"] for v in current_tv}
+                if target_version_name not in current_tv_names:
+                    payload = json.dumps({"update": {"customfield_10855": [{"add": {"name": target_version_name}}]}}).encode()
+                    jira_request(api_base, method="PUT", data=payload, email=email, token=token)
+                    print(f"  Target Version added: {target_version_name}")
+                else:
+                    print(f"  Target Version already set: {target_version_name}")
+            else:
+                warnings.append(
+                    f"WARN: Target Version '{target_version_name}' not found in project. "
+                    f"Set it manually in Jira."
+                )
+        except Exception as exc:
+            warnings.append(f"WARN: Could not set Target Version '{target_version_name}' ({exc}). Set manually in Jira.")
 
     # --- Add labels ---
     labels_to_add = ["component-onboarding", "devops-onboarding"]
