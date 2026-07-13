@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wrapper for the validate-release step (RHOAI only).
+# Wrapper for the validate-component-onboarding step (RHOAI only).
 #
 # Triggers the "Run Konflux Config Validator" GitHub Actions workflow in
 # red-hat-data-services/rhods-devops-infra and monitors it to completion.
@@ -35,9 +35,9 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   echo "ERROR: pipeline_state.json not found at $PIPELINE_STATE" >&2; exit 1
 }
 
-CURRENT_STATUS=$(jq -r '.steps.validate_release.status // "pending"' "$PIPELINE_STATE")
+CURRENT_STATUS=$(jq -r '.steps.validate_component_onboarding.status // "pending"' "$PIPELINE_STATE")
 if [[ "$CURRENT_STATUS" == "done" ]]; then
-  echo "validate_release already marked done."
+  echo "validate_component_onboarding already marked done."
   exit 2
 fi
 
@@ -57,9 +57,9 @@ if [[ "${ONBOARD_DRY_RUN:-false}" == "true" ]]; then
   echo "ONBOARD_DRY_RUN=true — skipping konflux-config-validator."
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
     --add-label "release-validation-skipped" \
-    --comment "[step:validate_release] Skipped (ONBOARD_DRY_RUN=true)." || true
+    --comment "[step:validate_component_onboarding] Skipped (ONBOARD_DRY_RUN=true)." || true
   bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
-    --state "$PIPELINE_STATE" --step validate_release --status done
+    --state "$PIPELINE_STATE" --step validate_component_onboarding --status done
   exit 0
 fi
 
@@ -88,7 +88,7 @@ RUN_ID=$(gh run list --repo "$WORKFLOW_REPO" \
 echo "Workflow run: $RUN_URL"
 
 uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-  --comment "[step:validate_release] konflux-config-validator triggered for ${VALIDATOR_VERSION}.
+  --comment "[step:validate_component_onboarding] konflux-config-validator triggered for ${VALIDATOR_VERSION}.
 
 Workflow run: ${RUN_URL}
 
@@ -100,7 +100,7 @@ while true; do
   if [[ $(date +%s) -ge $DEADLINE ]]; then
     echo "ERROR: Timed out after ${TIMEOUT_MINUTES} minutes." >&2
     uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
-      --comment "[step:validate_release] TIMEOUT — workflow did not complete within ${TIMEOUT_MINUTES} minutes.
+      --comment "[step:validate_component_onboarding] TIMEOUT — workflow did not complete within ${TIMEOUT_MINUTES} minutes.
 Run URL: ${RUN_URL}" || true
     exit 1
   fi
@@ -122,17 +122,17 @@ done
 if [[ "$WF_CONCLUSION" == "success" ]]; then
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
     --add-label "release-validation-passed" \
-    --comment "[step:validate_release] konflux-config-validator PASSED for ${VALIDATOR_VERSION}.
+    --comment "[step:validate_component_onboarding] konflux-config-validator PASSED for ${VALIDATOR_VERSION}.
 
 Workflow run: ${RUN_URL}" || true
   bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
-    --state "$PIPELINE_STATE" --step validate_release --status done
+    --state "$PIPELINE_STATE" --step validate_component_onboarding --status done
   echo "Validation PASSED: $RUN_URL"
   exit 0
 else
   uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
     --add-label "release-validation-failed" \
-    --comment "[step:validate_release] konflux-config-validator FAILED for ${VALIDATOR_VERSION} (conclusion: ${WF_CONCLUSION}).
+    --comment "[step:validate_component_onboarding] konflux-config-validator FAILED for ${VALIDATOR_VERSION} (conclusion: ${WF_CONCLUSION}).
 
 Workflow run: ${RUN_URL}" || true
   echo "ERROR: Validation $WF_CONCLUSION: $RUN_URL" >&2

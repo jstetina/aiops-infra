@@ -463,14 +463,14 @@ EXIT_CODE=$?
 - Exit 0: the script has already updated `pipeline_state.json` (status `pr_raised`, Tekton PR URL recorded, label `tekton-pr-raised` added). Extract `PR_URL` from last line of `$OUTPUT`. Set `NEW_PRS_RAISED="true"`.
 - Exit 1: hard failure (workflow dispatch failed, 422, or timeout). Print `$OUTPUT` and stop.
 
-### Step 9b: validate-release (step key: `validate_release`, RHOAI only)
+### Step 9b: validate-component-onboarding (step key: `validate_component_onboarding`, RHOAI only)
 
-**Execute if** `validate_release` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
+**Execute if** `validate_component_onboarding` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
 The `depends_on: ["bundle"]` check ensures bundle is merged before this runs. Runs the `konflux-config-validator` pytest suite from `rhods-devops-infra` to validate the full Konflux YAML configuration for the release — no cluster access required.
 
 ```bash
-OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_validate_release.sh" --jira-url "$JIRA_URL")
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_validate_component_onboarding.sh" --jira-url "$JIRA_URL")
 EXIT_CODE=$?
 ```
 
@@ -627,7 +627,7 @@ PRs / MRs:
   renovate        : <steps.renovate.status or "N/A (ODH)">
   renovate_sync   : <steps.renovate_sync.status or "N/A (ODH)">
   onboarder_workflow: <steps.onboarder_workflow.status or "N/A (RHOAI)">
-  validate_release  : <steps.validate_release.status or "N/A (ODH)">
+  validate_component_onboarding : <steps.validate_component_onboarding.status or "N/A (ODH)">
 
 Newly merged this run : <NEWLY_MERGED or "none">
 State file            : $PIPELINE_STATE
