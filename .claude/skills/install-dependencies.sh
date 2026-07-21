@@ -79,6 +79,100 @@ _installed() {
   return 1
 }
 
+_has_cmd() { command -v "$1" &>/dev/null; }
+
+# ── Helper: rootless skopeo install for non-sudo dnf-family containers ───────────
+# Some CI sandboxes (e.g. rootless agentic-ci images) run as a non-root user with
+# no sudo/dnf frontend at all, so "sudo dnf install skopeo" can never work there.
+# skopeo has no static-binary distribution, but its RPM + runtime deps can still
+# be extracted without root using tools already on such images: curl, rpm2archive
+# (part of base rpm tooling), and tar. This resolves the latest matching package
+# per repo directory listing rather than pinning exact versions.
+_resolve_latest_rpm() {
+  local dir_url="$1" name_pattern="$2"
+  curl -fsSL "$dir_url" 2>/dev/null \
+    | grep -oE "$name_pattern" \
+    | sort -V \
+    | tail -1
+}
+
+_install_skopeo_from_rpm_no_root() {
+  _has_cmd rpm2archive || { warn "rpm2archive not available; cannot install skopeo rootlessly"; return 1; }
+  _has_cmd curl || return 1
+
+  local major=""
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck source=/dev/null
+    source /etc/os-release
+    case "${ID:-}" in
+      rhel|centos|rocky|almalinux) major="${VERSION_ID%%.*}" ;;
+    esac
+  fi
+  if [[ -z "$major" ]]; then
+    warn "Rootless skopeo install only supports RHEL/CentOS/Rocky/Alma; skipping"
+    return 1
+  fi
+
+  local mirror="https://mirror.stream.centos.org/${major}-stream"
+  local appstream="${mirror}/AppStream/x86_64/os/Packages/"
+  local baseos="${mirror}/BaseOS/x86_64/os/Packages/"
+  local workdir libdir
+  workdir="$(mktemp -d)" || return 1
+  libdir="${HOME}/.local/lib/skopeo"
+  mkdir -p "$workdir/pkgs" "$workdir/extracted" "$libdir" "${HOME}/.local/bin" || { rm -rf "$workdir"; return 1; }
+
+  # name -> "repo_dir_url|filename_grep_pattern"
+  local pkg_specs=(
+    "skopeo|${appstream}|skopeo-[0-9][^\"]*\\.el${major}\\.x86_64\\.rpm"
+    "gpgme|${baseos}|gpgme-[0-9][^\"]*\\.el${major}\\.x86_64\\.rpm"
+    "shadow-subid|${baseos}|shadow-utils-subid-[0-9][^\"]*\\.el${major}\\.x86_64\\.rpm"
+    "libassuan|${baseos}|libassuan-[0-9][^\"]*\\.el${major}\\.x86_64\\.rpm"
+    "libgpg-error|${baseos}|libgpg-error-[0-9][^\"]*\\.el${major}\\.x86_64\\.rpm"
+  )
+
+  local spec name dir_url pattern fname
+  for spec in "${pkg_specs[@]}"; do
+    IFS='|' read -r name dir_url pattern <<< "$spec"
+    fname="$(_resolve_latest_rpm "$dir_url" "$pattern")"
+    if [[ -z "$fname" ]]; then
+      warn "Could not resolve a package for '$name' (el${major}); aborting rootless skopeo install"
+      rm -rf "$workdir"
+      return 1
+    fi
+    if ! curl -fsSL -o "$workdir/pkgs/${name}.rpm" "${dir_url}${fname}"; then
+      warn "Failed to download $name RPM; aborting rootless skopeo install"
+      rm -rf "$workdir"
+      return 1
+    fi
+  done
+
+  local p
+  for p in "$workdir"/pkgs/*.rpm; do
+    rpm2archive "$p" > "$p.tgz" 2>/dev/null || { rm -rf "$workdir"; return 1; }
+    tar -xzf "$p.tgz" -C "$workdir/extracted" 2>/dev/null || { rm -rf "$workdir"; return 1; }
+  done
+
+  if [[ ! -x "$workdir/extracted/usr/bin/skopeo" ]]; then
+    warn "skopeo binary not found after RPM extraction"
+    rm -rf "$workdir"
+    return 1
+  fi
+
+  cp "$workdir"/extracted/usr/lib64/*.so* "$libdir/" 2>/dev/null || { rm -rf "$workdir"; return 1; }
+  cp "$workdir/extracted/usr/bin/skopeo" "$libdir/skopeo.bin" || { rm -rf "$workdir"; return 1; }
+
+  cat > "${HOME}/.local/bin/skopeo" <<SHIM
+#!/bin/bash
+export LD_LIBRARY_PATH="${libdir}:\${LD_LIBRARY_PATH:-}"
+exec "${libdir}/skopeo.bin" "\$@"
+SHIM
+  chmod +x "${HOME}/.local/bin/skopeo"
+  rm -rf "$workdir"
+
+  export PATH="${HOME}/.local/bin:$PATH"
+  "${HOME}/.local/bin/skopeo" --version &>/dev/null
+}
+
 # ── 1. uv ───────────────────────────────────────────────────────────────────────
 echo "── uv (Python runner) ──────────────────────────────────"
 if _installed uv; then
@@ -141,7 +235,10 @@ if _installed yamllint; then
 else
   case "$PM" in
     brew) run brew install yamllint ;;
-    dnf)  run sudo dnf install -y yamllint ;;
+    # agentic-ci CI images (dnf-family, non-root, no sudo/dnf frontend) —
+    # yamllint is pure Python, install it as a uv tool.
+    dnf)  run uv tool install yamllint
+          export PATH="${HOME}/.local/bin:$PATH" ;;
     apt)  run sudo apt-get install -y yamllint ;;
   esac
   ok "yamllint installed"
@@ -152,10 +249,24 @@ echo ""
 echo "── skopeo (container image inspect) ───────────────────"
 if _installed skopeo; then
   warn "skopeo already installed ($(skopeo --version))"
+elif [[ "$PM" == "dnf" ]]; then
+  # agentic-ci CI images (dnf-family, non-root, no sudo/dnf frontend, no static
+  # skopeo binary exists). Download the RPM + runtime lib deps directly and
+  # extract them with rpm2archive/tar, which work without root.
+  if [[ "$DRY_RUN" == true ]]; then
+    info "(dry-run) would download skopeo + gpgme/libassuan/libgpg-error/shadow-utils-subid RPMs"
+    info "(dry-run) would extract via rpm2archive/tar into \$HOME/.local/lib/skopeo"
+    info "(dry-run) would install a shim at \$HOME/.local/bin/skopeo setting LD_LIBRARY_PATH"
+  elif _install_skopeo_from_rpm_no_root; then
+    ok "skopeo installed ($("${HOME}/.local/bin/skopeo" --version 2>/dev/null))"
+  else
+    err "skopeo install failed."
+    err "  https://github.com/containers/skopeo/blob/main/install.md"
+    exit 1
+  fi
 else
   case "$PM" in
     brew) run brew install skopeo ;;
-    dnf)  run sudo dnf install -y skopeo ;;
     apt)
       info "Adding containers/skopeo PPA for Ubuntu..."
       run sudo apt-get install -y skopeo || {
