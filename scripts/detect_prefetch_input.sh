@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Detect Konflux prefetch-input type by inspecting a GitHub repo root for dependency files.
+# Detect Konflux prefetch-input type(s) by inspecting a GitHub repo root for dependency files.
 #
 # Usage:
 #   eval "$(bash detect_prefetch_input.sh \
@@ -8,6 +8,9 @@
 #     [--github-token "$GITHUB_TOKEN"])"
 #
 # Exports (via eval): PREFETCH_INPUT (JSON array string)
+# Includes one entry per known dependency file found at the repo root (not just the
+# first match) — e.g. a polyglot repo with both go.mod and package.json yields both
+# gomod and npm entries.
 # Falls back to "[]" when the repo cannot be fetched or no known files are found.
 # Summary is printed to stderr.
 
@@ -50,14 +53,18 @@ if [[ -n "$GH_TOKEN" ]]; then
       "import sys,json; [print(f['name']) for f in json.load(sys.stdin) if f.get('type')=='file']" \
       2>/dev/null || echo "")
 
-    if echo "$FILE_NAMES" | grep -qx "go.mod"; then
-      PREFETCH_INPUT="[{\"type\": \"gomod\", \"path\": \"${CTX_PATH}\"}]"
-    elif echo "$FILE_NAMES" | grep -qx "requirements.txt"; then
-      PREFETCH_INPUT="[{\"type\": \"pip\", \"path\": \"requirements.txt\"}]"
-    elif echo "$FILE_NAMES" | grep -qx "package.json"; then
-      PREFETCH_INPUT="[{\"type\": \"npm\", \"path\": \"${CTX_PATH}\"}]"
-    elif echo "$FILE_NAMES" | grep -qx "Gemfile"; then
-      PREFETCH_INPUT="[{\"type\": \"bundler\", \"path\": \"${CTX_PATH}\"}]"
+    ENTRIES=()
+    echo "$FILE_NAMES" | grep -qx "go.mod"           && ENTRIES+=("gomod" "${CTX_PATH}")
+    echo "$FILE_NAMES" | grep -qx "requirements.txt"  && ENTRIES+=("pip" "requirements.txt")
+    echo "$FILE_NAMES" | grep -qx "package.json"      && ENTRIES+=("npm" "${CTX_PATH}")
+    echo "$FILE_NAMES" | grep -qx "Gemfile"           && ENTRIES+=("bundler" "${CTX_PATH}")
+
+    if [[ ${#ENTRIES[@]} -gt 0 ]]; then
+      PREFETCH_INPUT=$(python3 -c '
+import json, sys
+args = sys.argv[1:]
+print(json.dumps([{"type": args[i], "path": args[i + 1]} for i in range(0, len(args), 2)]))
+' "${ENTRIES[@]}")
     fi
   else
     echo "[detect_prefetch_input] WARN: Could not fetch repo contents via GitHub API." >&2
