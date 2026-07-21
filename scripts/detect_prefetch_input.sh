@@ -54,10 +54,10 @@ if [[ -n "$GH_TOKEN" ]]; then
       2>/dev/null || echo "")
 
     ENTRIES=()
-    echo "$FILE_NAMES" | grep -qx "go.mod"           && ENTRIES+=("gomod" "${CTX_PATH}")
-    echo "$FILE_NAMES" | grep -qx "requirements.txt"  && ENTRIES+=("pip" "requirements.txt")
-    echo "$FILE_NAMES" | grep -qx "package.json"      && ENTRIES+=("npm" "${CTX_PATH}")
-    echo "$FILE_NAMES" | grep -qx "Gemfile"           && ENTRIES+=("bundler" "${CTX_PATH}")
+    printf '%s\n' "$FILE_NAMES" | grep -qx "go.mod"          && ENTRIES+=("gomod" "${CTX_PATH}")
+    printf '%s\n' "$FILE_NAMES" | grep -qx "requirements.txt" && ENTRIES+=("pip" "${CTX_PATH}")
+    printf '%s\n' "$FILE_NAMES" | grep -qx "package.json"     && ENTRIES+=("npm" "${CTX_PATH}")
+    printf '%s\n' "$FILE_NAMES" | grep -qx "Gemfile"          && ENTRIES+=("bundler" "${CTX_PATH}")
 
     if [[ ${#ENTRIES[@]} -gt 0 ]]; then
       PREFETCH_INPUT=$(python3 -c '
