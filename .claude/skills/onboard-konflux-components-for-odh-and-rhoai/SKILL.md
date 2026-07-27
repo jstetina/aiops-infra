@@ -19,6 +19,7 @@ Orchestrates the complete component onboarding pipeline (idempotent re-run model
 5. `add-component-to-odh-konflux-central` **(ODH)** / `add-component-to-rhoai-konflux-central` + `create-pull-pipelines-in-rhoai-konflux-central` **(RHOAI; after krd merges)**
 6. `run-odh-konflux-onboarder-workflow` — triggered once krd+okc are both merged **(ODH only)**
 7. `integrate-component-with-bundle` — GitHub PR **(ODH: after onboarder_workflow; RHOAI: after okc merges)**
+7b. `krd-release-plan` (`krd_rpa`) — GitLab MR to ReleasePlanAdmission **(RHOAI only; after okc merges, alongside bundle)**
 8. `integrate-component-with-odh-operator` — GitHub PR **(after bundle merges; if is_operator=true)**
 9. `update-rhoai-product-listing` — GitLab MR, triggered after delivery-repo merges **(RHOAI only)**
 10. `setup-auto-merge` — GitHub PR to rhods-devops-infra **(RHOAI only)**
@@ -400,7 +401,22 @@ EXIT_CODE=$?
 - Exit 2: `is_operator=false` (skipped) or entry already present. Script updated `pipeline_state.json`. Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
-### Step 8h: update-rhoai-product-listing (step key: `product_listing`, RHOAI only)
+### Step 8h: krd-release-plan (step key: `krd_rpa`, RHOAI only)
+
+**Execute if** `krd_rpa` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
+
+The `depends_on: ["okc"]` check in Step 7 ensures this runs alongside build-config (`bundle`) after okc merges.
+
+> **VPN needed.**
+
+```bash
+OUTPUT=$(WORKDIR="$WORKDIR" PIPELINE_STATE="$PIPELINE_STATE" bash "$SCRIPTS_DIR/run_step_krd_rpa.sh" --jira-url "$JIRA_URL")
+EXIT_CODE=$?
+```
+
+Same Exits as other steps.
+
+### Step 8i: update-rhoai-product-listing (step key: `product_listing`, RHOAI only)
 
 **Execute if** `product_listing` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
@@ -415,7 +431,7 @@ EXIT_CODE=$?
 - Exit 2: entry already exists. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
-### Step 8i: setup-auto-merge (step key: `auto_merge`, RHOAI only)
+### Step 8j: setup-auto-merge (step key: `auto_merge`, RHOAI only)
 
 **Execute if** `auto_merge` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
@@ -428,7 +444,7 @@ EXIT_CODE=$?
 - Exit 2: entries already exist. Script updated `pipeline_state.json` (status `done`). Nothing further needed.
 - Exit 1: hard failure. Print `$OUTPUT` and stop.
 
-### Step 8j: enable-renovate-on-rhoai-component-repo (step key: `renovate`, RHOAI only)
+### Step 8k: enable-renovate-on-rhoai-component-repo (step key: `renovate`, RHOAI only)
 
 **Execute if** `renovate` is in `UNBLOCKED_STEPS` and `PRODUCT_CONTEXT == "RHOAI"`.
 
@@ -606,6 +622,7 @@ PRs / MRs:
   pull_pipelines  : <steps.pull_pipelines.status or "N/A (ODH)">
   operator        : <steps.operator.status>
   bundle          : <steps.bundle.status>
+  krd_rpa         : <steps.krd_rpa.status or "N/A (ODH)"> — <steps.krd_rpa.mr_url or "not yet raised">
   delivery_repo   : <steps.delivery_repo.status or "N/A (ODH)">
   product_listing : <steps.product_listing.status or "N/A (ODH)">
   auto_merge      : <steps.auto_merge.status or "N/A (ODH)">

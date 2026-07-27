@@ -134,11 +134,16 @@ if grep -qF "$RELATED_IMAGE_NAME" "$BUNDLE_PATCH" 2>/dev/null; then
 fi
 
 # Update bundle-patch.yaml — add relatedImages entry
-uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-array-entry \
-  "$BUNDLE_PATCH" \
-  --array-key relatedImages \
-  --name      "$RELATED_IMAGE_NAME" \
-  --value     "$RELATED_IMAGE_VALUE" || {
+APPEND_ARGS=(
+  "$BUNDLE_PATCH"
+  --array-key patch.relatedImages
+  --name      "$RELATED_IMAGE_NAME"
+  --value     "$RELATED_IMAGE_VALUE"
+)
+if [[ "$PRODUCT_CONTEXT" != "RHOAI" ]]; then
+  APPEND_ARGS+=(--component "$COMPONENT_NAME")
+fi
+uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-array-entry "${APPEND_ARGS[@]}" || {
   echo "ERROR: Could not update bundle-patch.yaml." >&2; exit 1
 }
 
@@ -159,8 +164,7 @@ if [[ "$PRODUCT_CONTEXT" == "RHOAI" ]]; then
   if [[ -f "$BC_CONFIG" ]] && ! grep -qF "$COMPONENT_NAME" "$BC_CONFIG" 2>/dev/null; then
     uv run --script "$SCRIPTS_DIR/edit_yaml.py" append-build-config-component \
       "$BC_CONFIG" \
-      --component-name "$COMPONENT_NAME" \
-      --version-var    "${VERSION_VAR:-}" \
+      --component-name "${QUAY_ORG}/${COMPONENT_NAME}-rhel9" \
       --repo-url       "$REPO_URL" \
       --repo-branch    "$REPO_BRANCH" 2>/dev/null || true
     FILES_CHANGED="$FILES_CHANGED config/build-config.yaml"
