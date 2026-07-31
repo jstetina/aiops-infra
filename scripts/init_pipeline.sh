@@ -84,6 +84,7 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
   # operator depends on bundle (both products)
   OPERATOR_DEPENDS_ON='["bundle"]'
 
+
   SKIP_RHOAI_ONLY="pending"
   SKIP_ODH_ONLY="pending"
   if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
@@ -197,7 +198,7 @@ if [[ ! -f "$PIPELINE_STATE" ]]; then
       "depends_on": ["krd", "okc"],
       "label_raised": "tekton-pr-raised",
       "label_done": "tekton-pr-merged"
-    }
+    },
   }
 }
 EOF

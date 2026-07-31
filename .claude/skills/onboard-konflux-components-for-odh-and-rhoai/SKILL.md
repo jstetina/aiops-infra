@@ -560,7 +560,7 @@ Set `NEW_PRS_RAISED="true"` in Step 8 immediately after recording any new PR/MR 
 
 ## Step 12: Resolve or Keep in Review
 
-**Check if all applicable steps are done:**
+**Check if all applicable steps are done by reading `$PIPELINE_STATE` with `jq`:**
 
 ```bash
 ALL_DONE=$(jq -r '
@@ -657,6 +657,9 @@ Re-run this skill after PRs/MRs are merged to advance the pipeline.
 | Bundle PR fails | 8g | Verify `GITHUB_TOKEN` push access to `ODH-Build-Config` |
 | Product listing MR fails | 8h | Check VPN; delivery_repo must be merged first |
 | Onboarder workflow 422 | 9a | krd or okc not yet merged — check their status and re-run |
+| Build verify: EXT_OC_TOKEN expired | 9b | Export fresh `EXT_OC_TOKEN` from stone-prd-rh01 console; re-run |
+| Build verify: timeout | 9b | PipelineRun did not appear — check PAC config and re-run |
+| Build verify: PipelineRun failed | 9b | Check build URL in Jira comment; fix Dockerfile/lockfile; re-run |
 | Auto-merge PR fails 3× | 8i | Check GITHUB_TOKEN push access to rhods-devops-infra |
 | Renovate PR fails 3× | 8j | Check GITHUB_TOKEN push access to rhoai-konflux-central |
 | Renovate sync workflow 403 | 9b | GITHUB_TOKEN needs `actions:write` scope |
