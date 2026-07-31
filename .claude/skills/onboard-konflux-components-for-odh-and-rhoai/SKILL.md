@@ -193,6 +193,26 @@ ERROR in Step 4 (Parse Component Details): Could not parse YAML or derive PRODUC
 
 ---
 
+## Step 4b: Ensure Template Clone Link
+
+Ensure the Jira has a "clones" link to the product-specific onboarding template
+(covers tickets created outside the `create-component-onboarding-jira` skill):
+
+```bash
+if [[ "$PRODUCT_CONTEXT" == "ODH" ]]; then
+  TEMPLATE_ID="RHOAIENG-35683"
+else
+  TEMPLATE_ID="RHOAIENG-17225"
+fi
+
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+  --link-clones "$TEMPLATE_ID" || true
+```
+
+Non-fatal — if the link already exists or cannot be created, continue.
+
+---
+
 ## Step 5: Sync State from Jira Labels
 
 Reconstruct `pipeline_state.json` from Jira labels (durable even after a fresh checkout)
