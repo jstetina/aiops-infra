@@ -9,12 +9,6 @@
 #   1  Build not found, still running, or failed — caller should exit 1
 #
 # Set ONBOARD_DRY_RUN=true to bypass (fork testing without cluster access).
-#
-# TEMPORARY: unconditionally exit 0 due to KubeArchive connectivity issues.
-# Revert this once connectivity is restored.
-echo "TEMPORARY BYPASS: skipping build verification (KubeArchive connectivity issues)."
-exit 0
-
 set -euo pipefail
 
 export PATH="${HOME}/.local/bin:${PATH}"
