@@ -58,7 +58,7 @@ fi
 git config --get user.email &>/dev/null || git config user.email "ci-bot@redhat.com"
 git config --get user.name  &>/dev/null || git config user.name  "CI Bot"
 
-git commit -m "$MESSAGE"
+git commit -s -m "$MESSAGE"
 
 # Push with retry logic
 _push() {

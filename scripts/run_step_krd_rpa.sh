@@ -132,7 +132,7 @@ fi
 
 cd "$CLONE_DIR"
 git add -A
-git commit -m "Add ${KONFLUX_COMPONENT_NAME} to ReleasePlanAdmission files"
+git commit -s -m "Add ${KONFLUX_COMPONENT_NAME} to ReleasePlanAdmission files"
 
 git push origin "$DEST_BRANCH" || {
   git fetch --unshallow origin || { echo "ERROR: Push failed — git fetch --unshallow failed." >&2; exit 1; }

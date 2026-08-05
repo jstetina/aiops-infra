@@ -290,7 +290,7 @@ fi
 # Stage and commit
 cd "$CLONE_DIR"
 git add -A
-git commit -m "Add ${KONFLUX_COMPONENT_NAME} Component to konflux-release-data"
+git commit -s -m "Add ${KONFLUX_COMPONENT_NAME} Component to konflux-release-data"
 
 # verify-manifests
 cd "$CLONE_DIR/tenants-config"
