@@ -82,10 +82,28 @@ OKC_PATH=$(echo "$OKC_URL" | sed 's|https://github.com/||;s|\.git$||')
 WORKFLOW_FILE=".github/workflows/odh-konflux-onboarder.yml"
 OKC_REF="main"
 
-# Guard: check for an existing open Tekton PR in the component repo before
-# triggering the onboarder workflow.  The onboarder creates branches named
-# ci-<repo>-<run_id> (CI) or release-<repo>-<version>-<run_id> (Release),
-# all with the title "CI: Tekton pipeline sync".
+# Guard 1: Jira label reservation — prevent concurrent dispatch.
+JIRA_SERVER_URL="${JIRA_SERVER:-https://redhat.atlassian.net}"
+DISPATCH_LABEL="tekton-pr-dispatched"
+
+JIRA_LABEL_JSON=$(curl -sf -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+  "${JIRA_SERVER_URL}/rest/api/3/issue/${JIRA_ID}?fields=labels" 2>/dev/null) || {
+  echo "ERROR: Could not fetch Jira labels for ${JIRA_ID} — cannot verify reservation." >&2
+  exit 1
+}
+JIRA_LABELS=$(echo "$JIRA_LABEL_JSON" | jq -r '.fields.labels[]' 2>/dev/null || true)
+
+for GUARD_LABEL in "$DISPATCH_LABEL" tekton-pr-raised tekton-pr-merged; do
+  if echo "$JIRA_LABELS" | grep -qxF "$GUARD_LABEL"; then
+    echo "Jira label '$GUARD_LABEL' present — onboarder already dispatched/completed."
+    echo "Remove the label manually to re-trigger."
+    exit 0
+  fi
+done
+
+# Guard 2: check for an existing open Tekton PR in the component repo.
+# The onboarder creates branches named ci-<repo>-<run_id> (CI) or
+# release-<repo>-<version>-<run_id> (Release).
 REPO_OWNER=$(echo "$REPO_URL" | sed 's|https://github.com/||;s|\.git$||' | cut -d/ -f1)
 REPO_FULL="${REPO_OWNER}/${REPO_NAME}"
 if [[ "$BUILD_TYPE" == "CI" ]]; then
@@ -94,10 +112,21 @@ else
   BRANCH_PREFIX="release-${REPO_NAME}-"
 fi
 
-EXISTING_TEKTON_PR=$(gh pr list --repo "$REPO_FULL" --state open \
+GH_PR_ERR="/tmp/gh_pr_list_${JIRA_ID}.err"
+GH_PR_OUTPUT=""
+GH_PR_RC=0
+GH_PR_OUTPUT=$(gh pr list --repo "$REPO_FULL" --state open \
   --json number,url,headRefName --jq \
   ".[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}\")) | .url" \
-  2>/dev/null | head -1 || true)
+  2>"$GH_PR_ERR") || GH_PR_RC=$?
+
+if [[ $GH_PR_RC -ne 0 ]]; then
+  echo "ERROR: Could not check for existing Tekton PRs in $REPO_FULL (exit $GH_PR_RC)." >&2
+  cat "$GH_PR_ERR" >&2
+  exit 1
+fi
+
+EXISTING_TEKTON_PR=$(echo "$GH_PR_OUTPUT" | head -1)
 
 if [[ -n "$EXISTING_TEKTON_PR" ]]; then
   echo "Open Tekton PR already exists: $EXISTING_TEKTON_PR"
@@ -116,6 +145,24 @@ Tekton PR: ${EXISTING_TEKTON_PR}" || true
   echo "PR_URL=${EXISTING_TEKTON_PR}"
   exit 0
 fi
+
+# Place reservation before dispatching — release on failure so retries work.
+RESERVATION_HELD=true
+release_reservation() {
+  if [[ "$RESERVATION_HELD" == "true" ]]; then
+    echo "Releasing reservation label '${DISPATCH_LABEL}' after failure." >&2
+    uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+      --remove-label "$DISPATCH_LABEL" 2>/dev/null || true
+  fi
+}
+trap release_reservation EXIT
+
+uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+  --add-label "$DISPATCH_LABEL" || {
+  echo "ERROR: Could not set reservation label '${DISPATCH_LABEL}'." >&2
+  RESERVATION_HELD=false
+  exit 1
+}
 
 echo "Triggering odh-konflux-onboarder workflow for component: $COMPONENT"
 echo "OKC_URL     : $OKC_URL"
@@ -220,4 +267,5 @@ bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
   --state "$PIPELINE_STATE" --step onboarder_workflow \
   --status pr_raised --url "$TEKTON_PR_URL" --url-field pr_url
 
+RESERVATION_HELD=false
 echo "PR_URL=${TEKTON_PR_URL}"
