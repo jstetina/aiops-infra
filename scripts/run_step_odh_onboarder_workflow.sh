@@ -109,7 +109,7 @@ REPO_FULL="${REPO_OWNER}/${REPO_NAME}"
 if [[ "$BUILD_TYPE" == "CI" ]]; then
   BRANCH_PREFIX="ci-${REPO_NAME}-"
 else
-  BRANCH_PREFIX="release-${REPO_NAME}-"
+  BRANCH_PREFIX="release-${REPO_NAME}-${VERSION}-"
 fi
 
 GH_PR_ERR="/tmp/gh_pr_list_${JIRA_ID}.err"
