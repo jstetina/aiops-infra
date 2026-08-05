@@ -76,6 +76,11 @@ else
   CONTEXT_PATH_NORMALIZED="$CONTEXT_PATH"
 fi
 
+if [[ -n "$CONTEXT_PATH_NORMALIZED" && ! "$CONTEXT_PATH_NORMALIZED" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
+  echo "ERROR: context_path contains invalid characters: $CONTEXT_PATH_NORMALIZED" >&2
+  exit 1
+fi
+
 # Fast-path idempotency check via GitHub API
 PUSH_API_URL="https://api.github.com/repos/${OKC_PATH}/contents/pipelineruns/${REPO_NAME}/${PUSH_YAML_FILE}?ref=main"
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
