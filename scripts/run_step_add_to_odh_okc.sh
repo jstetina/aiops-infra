@@ -128,7 +128,7 @@ sed -i \
   -e "s|odh-file-name-on-push|${PUSH_RUN_NAME}|g" \
   -e "s|quay.io/opendatahub/quayurl|quay.io/${QUAY_ORG}/${COMPONENT_NAME}|g" \
   -e "s|dockerfilepath|${DOCKERFILE_PATH}|g" \
-  -e "s|    value: \\.  |    value: ${CONTEXT_PATH_NORMALIZED}|g" \
+  -e "/name: path-context/{n;s|value: .*|value: ${CONTEXT_PATH_NORMALIZED}|;}" \
   -e "s|build-pipeline-sa-namw|${SERVICE_ACCOUNT_NAME}|g" \
   -e "s|open-data-hub-tenant|${NAMESPACE}|g" \
   -e "s|opendatahub-builds|${APPLICATION}|g" \
@@ -147,7 +147,7 @@ sed -i \
   -e "s|  name: #odh-file-name-on-pull-request|  name: ${PR_RUN_NAME}|g" \
   -e "s|quay.io/opendatahub/quayurl|quay.io/${QUAY_ORG}/${COMPONENT_NAME}|g" \
   -e "s|dockerfilepath|${DOCKERFILE_PATH}|g" \
-  -e "s|    value: \.  |    value: ${CONTEXT_PATH_NORMALIZED}|g" \
+  -e "/name: path-context/{n;s|value: .*|value: ${CONTEXT_PATH_NORMALIZED}|;}" \
   -e "s|    serviceAccountName: #build-pipeline-sa-name|    serviceAccountName: ${SERVICE_ACCOUNT_NAME}|g" \
   -e "s|open-data-hub-tenant|${NAMESPACE}|g" \
   -e "s|opendatahub-builds|${APPLICATION}|g" \
