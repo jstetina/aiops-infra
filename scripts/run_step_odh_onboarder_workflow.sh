@@ -82,6 +82,41 @@ OKC_PATH=$(echo "$OKC_URL" | sed 's|https://github.com/||;s|\.git$||')
 WORKFLOW_FILE=".github/workflows/odh-konflux-onboarder.yml"
 OKC_REF="main"
 
+# Guard: check for an existing open Tekton PR in the component repo before
+# triggering the onboarder workflow.  The onboarder creates branches named
+# ci-<repo>-<run_id> (CI) or release-<repo>-<version>-<run_id> (Release),
+# all with the title "CI: Tekton pipeline sync".
+REPO_OWNER=$(echo "$REPO_URL" | sed 's|https://github.com/||;s|\.git$||' | cut -d/ -f1)
+REPO_FULL="${REPO_OWNER}/${REPO_NAME}"
+if [[ "$BUILD_TYPE" == "CI" ]]; then
+  BRANCH_PREFIX="ci-${REPO_NAME}-"
+else
+  BRANCH_PREFIX="release-${REPO_NAME}-"
+fi
+
+EXISTING_TEKTON_PR=$(gh pr list --repo "$REPO_FULL" --state open \
+  --json number,url,headRefName --jq \
+  ".[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}\")) | .url" \
+  2>/dev/null | head -1 || true)
+
+if [[ -n "$EXISTING_TEKTON_PR" ]]; then
+  echo "Open Tekton PR already exists: $EXISTING_TEKTON_PR"
+  echo "Skipping workflow trigger — reusing existing PR."
+
+  uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
+    --add-label "tekton-pr-raised" \
+    --comment "[step:onboarder_workflow] Existing open Tekton PR found — skipping new workflow trigger.
+
+Tekton PR: ${EXISTING_TEKTON_PR}" || true
+
+  bash "$SCRIPTS_DIR/update_pipeline_state.sh" \
+    --state "$PIPELINE_STATE" --step onboarder_workflow \
+    --status pr_raised --url "$EXISTING_TEKTON_PR" --url-field pr_url
+
+  echo "PR_URL=${EXISTING_TEKTON_PR}"
+  exit 0
+fi
+
 echo "Triggering odh-konflux-onboarder workflow for component: $COMPONENT"
 echo "OKC_URL     : $OKC_URL"
 echo "Build type  : $BUILD_TYPE"

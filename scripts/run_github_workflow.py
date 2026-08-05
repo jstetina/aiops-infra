@@ -133,6 +133,13 @@ def strip_log_timestamps(line: str) -> str:
     return re.sub(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z ", "", line)
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _inputs_match(expected: dict[str, str], actual: dict[str, str]) -> bool:
+    """True if every key in *expected* is present in *actual* with the same value."""
+    return all(actual.get(k) == v for k, v in expected.items())
+
+
 # ── Subcommand: trigger ────────────────────────────────────────────────────────
 
 def cmd_trigger(args, token: str) -> None:
@@ -244,28 +251,38 @@ def cmd_trigger(args, token: str) -> None:
 
     print("Workflow dispatched. Waiting for run to appear...", file=sys.stderr)
 
-    # Poll for the new run (up to 60 s)
-    deadline = time.time() + 60
+    # Poll for the new run (up to 120 s), matching by dispatch inputs to avoid
+    # picking up a concurrent run for a different component.
+    deadline = time.time() + 120
     while time.time() < deadline:
         time.sleep(5)
         try:
             runs = target_workflow.get_runs()
             for run in runs:
-                # GitHub returns runs newest-first; stop scanning after runs that
-                # are clearly older than our dispatch time
                 run_created = run.created_at
                 if run_created.tzinfo is None:
                     run_created = run_created.replace(tzinfo=timezone.utc)
                 if run_created < before_dt:
                     break
-                print(f"  Found candidate run #{run.id} created at {run.created_at}", file=sys.stderr)
+
+                if inputs_dict:
+                    run_inputs = (run.raw_data or {}).get("inputs") or {}
+                    if not _inputs_match(inputs_dict, run_inputs):
+                        print(
+                            f"  Skipping run #{run.id} — inputs don't match "
+                            f"(wanted {inputs_dict}, got {run_inputs})",
+                            file=sys.stderr,
+                        )
+                        continue
+
+                print(f"  Matched run #{run.id} created at {run.created_at}", file=sys.stderr)
                 print(run.id)
                 sys.exit(0)
         except GithubException as exc:
             print(f"  WARNING: Could not list workflow runs: {exc}", file=sys.stderr)
 
     print(
-        "ERROR: No workflow run appeared within 60 seconds after dispatch.\n"
+        "ERROR: No matching workflow run appeared within 120 seconds after dispatch.\n"
         "  The workflow may still start — check the Actions tab in the GitHub UI.\n"
         f"  URL: https://github.com/{owner}/{repo_name}/actions/workflows/{target_workflow.path.split('/')[-1]}",
         file=sys.stderr,
