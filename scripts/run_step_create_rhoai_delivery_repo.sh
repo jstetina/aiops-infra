@@ -80,10 +80,11 @@ echo "PYXIS_URL resolved to: $PYXIS_URL"
 PYXIS_PATH=$(echo "$PYXIS_URL" | sed 's|https://gitlab.cee.redhat.com/||;s|\.git$||')
 PYXIS_PATH_ENCODED=$(echo "$PYXIS_PATH" | sed 's|/|%2F|g')
 
-# Determine which product YAML to target based on release category
-PRODUCT_LINE="rhoai"
-[[ "$RELEASE_CATEGORY" == "Beta" ]] && PRODUCT_LINE="rhoai-beta"
-PRODUCT_YAML_PATH="products/${PRODUCT_LINE}/rhoai.yaml"
+# All release categories (GA, Tech Preview, Beta) use the same product YAML.
+# The release_category distinction is encoded *inside* the YAML entry (via
+# release_categories and the rhoai-beta/ repository name prefix), not via
+# separate directory trees.
+PRODUCT_YAML_PATH="products/rhoai/rhoai.yaml"
 PRODUCT_YAML_PATH_ENCODED=$(echo "$PRODUCT_YAML_PATH" | sed 's|/|%2F|g')
 
 # Fast-path: check if repo already exists via GitLab API
@@ -139,10 +140,10 @@ echo "$RESULT"
 # Commit and push
 bash "$SCRIPTS_DIR/git_commit_push.sh" \
   --clone-dir "$CLONE_DIR" \
-  --files     "products/rhoai/rhoai.yaml" \
+  --files     "$PRODUCT_YAML_PATH" \
   --message   "Add ${REPOSITORY_NAME} delivery repository for ${COMPONENT_NAME}
 
-Adds a new repository entry to products/rhoai/rhoai.yaml:
+Adds a new repository entry to ${PRODUCT_YAML_PATH}:
   repository: ${REPOSITORY_NAME}
   content_stream_tags: ['${CONTENT_STREAM_TAG}']
 
@@ -158,7 +159,7 @@ for attempt in 1 2 3; do
     --dest-url    "$PYXIS_URL" \
     --dest-branch main \
     --title       "Add ${REPOSITORY_NAME} delivery repository for ${COMPONENT_NAME}" \
-    --description "Adds a new delivery repository entry to \`products/rhoai/rhoai.yaml\`.
+    --description "Adds a new delivery repository entry to \`${PRODUCT_YAML_PATH}\`.
 
 | Field | Value |
 |-------|-------|
@@ -167,7 +168,7 @@ for attempt in 1 2 3; do
 | \`component_name\` | \`${COMPONENT_NAME}\` |
 | \`target_rhoai_version\` | \`${TARGET_RHOAI_VERSION}\` |
 
-**File changed:** \`products/rhoai/rhoai.yaml\`
+**File changed:** \`${PRODUCT_YAML_PATH}\`
 **Jira:** ${JIRA_URL}" 2>/dev/null) && break
   [[ "$attempt" -eq 3 ]] && {
     echo "ERROR: Could not create MR after 3 attempts." >&2; exit 1
@@ -181,7 +182,7 @@ uv run --script "$SCRIPTS_DIR/update_jira_issue.py" "$JIRA_URL" \
 
 MR URL: ${MR_URL}
 
-File changed: products/rhoai/rhoai.yaml
+File changed: ${PRODUCT_YAML_PATH}
 Repository: ${REPOSITORY_NAME}
 Content stream tag: ${CONTENT_STREAM_TAG}
 
