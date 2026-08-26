@@ -63,7 +63,7 @@ def main():
     parser.add_argument("--short-description",  required=True)
     parser.add_argument("--long-description",   required=True)
     parser.add_argument("--release-category",
-                        choices=["Generally Available", "Tech Preview", "Beta"],
+                        choices=["Generally Available", "Tech Preview"],
                         default="Generally Available")
     args = parser.parse_args()
 

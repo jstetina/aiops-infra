@@ -133,7 +133,7 @@ All fields live under an `inputs:` top-level key. Required fields:
 | `build_type` | string | ✓ | — | `CI` or `Release` |
 | `target_rhoai_version` | string | — | ✓ | Canonical form: `x.y` or `x.y-ea-N` |
 | `architectures` | string[] | — | ✓ | `x86_64`, `arm64`, `ppc64le`, `s390x`; default `[x86_64, arm64]` |
-| `release_category` | string | — | ✓ | `Generally Available`, `Tech Preview`, or `Beta` |
+| `release_category` | string | — | ✓ | `Generally Available` or `Tech Preview` |
 | `short_description` | string | — | ✓ | A short noun phrase summarising the component |
 | `long_description` | string | — | ✓ | One–two sentences describing what the component does |
 | `operator_manifest_src_path` | string | if operator | if operator | Relative path to manifests in git repo |

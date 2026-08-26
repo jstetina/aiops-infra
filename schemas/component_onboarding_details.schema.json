@@ -106,7 +106,7 @@
         "release_category": {
           "type": "string",
           "description": "Release maturity category for the component (required when product_context is RHOAI)",
-          "enum": ["Generally Available", "Tech Preview", "Beta"]
+          "enum": ["Generally Available", "Tech Preview"]
         }
       },
       "allOf": [

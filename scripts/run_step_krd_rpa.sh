@@ -69,9 +69,6 @@ else
   echo "ERROR: Cannot parse target_rhoai_version '${TARGET_RHOAI_VERSION}'." >&2; exit 1
 fi
 
-PRODUCT_LINE="rhoai"
-[[ "$RELEASE_CATEGORY" == "Beta" ]] && PRODUCT_LINE="rhoai-beta"
-
 KRD_URL="${KONFLUX_RELEASE_DATA_REPO_URL:-https://gitlab.cee.redhat.com/releng/konflux-release-data.git}"
 SPARSE_PATHS="config/stone-prod-p02.hjvn.p1/product/ReleasePlanAdmission/rhoai"
 
@@ -98,7 +95,7 @@ if ! grep -q "name: ${COMPONENT_NAME}-${RPA_VAR}" "$RPA_STAGE" 2>/dev/null; then
     "$RPA_STAGE" \
     --array-key "spec.data.mapping.components" \
     --name "${COMPONENT_NAME}-${RPA_VAR}" \
-    --url "registry.stage.redhat.io/${PRODUCT_LINE}/${COMPONENT_NAME}-rhel9" || {
+    --url "registry.stage.redhat.io/rhoai/${COMPONENT_NAME}-rhel9" || {
     echo "ERROR: Could not append to RPA stage file." >&2; exit 1
   }
   CHANGES_MADE=true
@@ -114,7 +111,7 @@ if ! grep -q "name: ${COMPONENT_NAME}-${RPA_VAR}" "$RPA_PROD" 2>/dev/null; then
     "$RPA_PROD" \
     --array-key "spec.data.mapping.components" \
     --name "${COMPONENT_NAME}-${RPA_VAR}" \
-    --url "registry.redhat.io/${PRODUCT_LINE}/${COMPONENT_NAME}-rhel9" || {
+    --url "registry.redhat.io/rhoai/${COMPONENT_NAME}-rhel9" || {
     echo "ERROR: Could not append to RPA prod file." >&2; exit 1
   }
   CHANGES_MADE=true

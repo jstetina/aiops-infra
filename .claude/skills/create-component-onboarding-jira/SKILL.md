@@ -198,12 +198,10 @@ _Execute only when `product_context == RHOAI`. Skip entirely for ODH._
 > Options:
 >   1. Generally Available (GA)
 >   2. Tech Preview (TP)
->   3. Dev Preview / Beta (DP)
 
 → Accept the full label or the abbreviation (case-insensitive). Map to stored value:
   - `Generally Available` / `GA` → `"Generally Available"`
   - `Tech Preview` / `TP` → `"Tech Preview"`
-  - `Dev Preview (Beta)` / `Dev Preview` / `Beta` / `DP` → `"Beta"`
   Re-ask if the input does not match any of the above.
 → Store in `release_category`.
 
