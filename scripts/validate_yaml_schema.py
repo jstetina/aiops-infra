@@ -71,6 +71,12 @@ def load_schema(path: Path) -> dict:
         sys.exit(1)
 
 
+def _is_unsupported_release_category(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    return value.strip().lower() == "beta"
+
+
 def format_error(error: jsonschema.ValidationError) -> str:
     """Format a single validation error as a human-readable string.
 
@@ -118,6 +124,17 @@ def main() -> None:
 
     data = load_yaml(yaml_path)
     schema = load_schema(schema_path)
+
+    if isinstance(data, dict):
+        release_category = (data.get("inputs") or {}).get("release_category")
+        if _is_unsupported_release_category(release_category):
+            print(f"Validation failed: 1 error(s) found in '{yaml_path}':", file=sys.stderr)
+            print(
+                "  - inputs.release_category: 'Beta' (Dev Preview) is no longer supported. "
+                "Use 'Generally Available' or 'Tech Preview'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Collect ALL errors before reporting (do not stop at first)
     validator = Draft202012Validator(schema)

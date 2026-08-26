@@ -24,7 +24,7 @@ def main():
     p.add_argument("--target-rhoai-version", help="RHOAI only")
     p.add_argument("--long-description", help="RHOAI only")
     p.add_argument("--short-description", help="RHOAI only")
-    p.add_argument("--release-category", choices=["Generally Available", "Tech Preview", "Beta"], help="RHOAI only")
+    p.add_argument("--release-category", choices=["Generally Available", "Tech Preview"], help="RHOAI only")
     p.add_argument("--is-operator", action="store_true", default=False)
     p.add_argument("--operator-manifest-src-path")
     p.add_argument("--operator-manifest-dest-path")
