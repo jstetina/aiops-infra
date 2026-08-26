@@ -64,9 +64,10 @@ RELEASE_CATEGORY=$(grep -m1 'release_category:' "$YAML_FILE" \
 [[ -z "$RELEASE_CATEGORY" ]]  && RELEASE_CATEGORY="Generally Available"
 
 eval "$(bash "$SCRIPTS_DIR/parse_rhoai_version.sh" \
-  --version   "$TARGET_RHOAI_VERSION" \
-  --component "$COMPONENT_NAME")"
-# Sets: CONTENT_STREAM_TAG, REPOSITORY_NAME, and other version vars
+  --version          "$TARGET_RHOAI_VERSION" \
+  --component        "$COMPONENT_NAME" \
+  --release-category "$RELEASE_CATEGORY")"
+# Sets: CONTENT_STREAM_TAG, REPOSITORY_NAME (rhoai-beta/ prefix for Beta), and other version vars
 
 DISPLAY_NAME=$(echo "$COMPONENT_NAME" | tr '-' ' ' \
   | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1' \
@@ -79,7 +80,10 @@ echo "PYXIS_URL resolved to: $PYXIS_URL"
 PYXIS_PATH=$(echo "$PYXIS_URL" | sed 's|https://gitlab.cee.redhat.com/||;s|\.git$||')
 PYXIS_PATH_ENCODED=$(echo "$PYXIS_PATH" | sed 's|/|%2F|g')
 
-# All release categories (GA, Tech Preview) use the same product YAML.
+# All release categories (GA, Tech Preview, Beta) use the same product YAML.
+# The release_category distinction is encoded *inside* the YAML entry (via
+# release_categories and the rhoai-beta/ repository name prefix), not via
+# separate directory trees.
 PRODUCT_YAML_PATH="products/rhoai/rhoai.yaml"
 PRODUCT_YAML_PATH_ENCODED=$(echo "$PRODUCT_YAML_PATH" | sed 's|/|%2F|g')
 
